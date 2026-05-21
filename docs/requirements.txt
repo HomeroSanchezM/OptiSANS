@@ -1,0 +1,7 @@
+sphinx
+sphinx-rtd-theme
+biopython
+gemmi
+numpy
+scipy
+matplotlib
