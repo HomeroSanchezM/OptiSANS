@@ -1,5 +1,9 @@
 # Deuteration Optimization using Genetic Algorithm for SANS
 
+[![Documentation Status](https://readthedocs.org/projects/sans-deuteration-parameter-optimization/badge/?version=latest)](https://sans-deuteration-parameter-optimization.readthedocs.io/en/latest/)
+[![Python](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 ## Overview
 
 This project implements a genetic algorithm (GA) to find the optimal deuteration pattern of a protein for Small-Angle Neutron Scattering (SANS) contrast variation experiments.
