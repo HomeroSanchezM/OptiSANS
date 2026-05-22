@@ -4,7 +4,7 @@ API Reference
 This section provides auto-generated API documentation from the project's
 Python modules.
 
-.. automodule:: __init__
+.. automodule:: GA
    :members:
    :undoc-members:
    :show-inheritance:

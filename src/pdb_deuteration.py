@@ -92,7 +92,7 @@ AA_DICT = {aa.code_3: aa for aa in AMINO_ACIDS}
 AA_INDEX = {aa.code_3: i for i, aa in enumerate(AMINO_ACIDS)}
 
 
-# duplicated table of __init__.py for standalone module use 
+# duplicated table of GA.py for standalone module use 
 
 # Linked pairs: when one member is deuterated, the other is too.
 #   ASN + ASP

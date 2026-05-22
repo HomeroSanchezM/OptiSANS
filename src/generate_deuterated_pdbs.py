@@ -33,7 +33,7 @@ from typing import List, Dict, Any, Optional, Set
 
 import numpy as np
 
-from __init__ import (
+from GA import (
     AMINO_ACIDS,
     EFFECTIVE_AMINO_ACIDS,       # 18 effective genes
     N_EFFECTIVE_AA,
@@ -345,7 +345,7 @@ def apply_missing_aa_to_restrictions(restrictions: List[bool],
     Returns:
         New 18-element list with absent-AA genes disabled.
     """
-    from __init__ import LINKED_AA_GROUPS  # avoid circular at module level
+    from GA import LINKED_AA_GROUPS  # avoid circular at module level
 
     updated = list(restrictions)
     missing_set = set(missing_aa)
@@ -379,7 +379,7 @@ def generate_protein_plots(pdb_analyzer: PdbDeuteration,
     Args:
         pdb_analyzer: A PdbDeuteration instance whose aa_count and
                       aa_hydrogen_count attributes have been populated
-                      (i.e. __init__ has completed).
+                      (i.e. GA has completed).
         plot_dir:     Directory where PNG files will be written.
     """
     try:
