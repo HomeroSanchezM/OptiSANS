@@ -128,7 +128,7 @@ def parse_arguments():
     io = parser.add_argument_group('Input/Output')
     io.add_argument('--output_dir', type=str,
                     help='Output directory (default: <pdb_basename>_deuterated_pdbs)')
-    io.add_argument('--batch_script', type=str, default='./process_pdb.sh',
+    io.add_argument('--batch_script', type=str, default='./parallel_process_pdb.sh',
                     help='Path to the batch processing script')
 
     ref = parser.add_argument_group('Reference PDBs')
