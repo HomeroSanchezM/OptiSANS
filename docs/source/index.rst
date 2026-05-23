@@ -19,5 +19,6 @@ two experimental references, multiplied by the signal-to-background ratio.
    installation
    usage
    configuration
-   api
    visualization
+   api
+   

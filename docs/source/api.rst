@@ -4,6 +4,12 @@ API Reference
 This section provides auto-generated API documentation from the project's
 Python modules.
 
+.. automodule:: cli
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :noindex:
+
 .. automodule:: GA
    :members:
    :undoc-members:

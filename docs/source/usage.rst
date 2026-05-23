@@ -1,21 +1,232 @@
 Usage
 =====
 
-The project provides four usage modes:
+The project provides two interfaces:
 
-1. **Main genetic algorithm workflow** -- full GA pipeline with PDB generation,
-   SANS simulation, and fitness evaluation.
-2. **Convergence study** -- run the GA multiple times across one or more
-   proteins with different random seeds.
-3. **Standalone PDB deuteration** -- deuterate a single PDB file without
-   running the GA.
-4. **Standalone fitness evaluation** -- evaluate fitness of existing
-   simulation files without re-running the GA or Pepsi-SANS.
+- **Unified CLI** (recommended): the ``optisans`` command wraps all
+  functionality behind clear subcommands. This is the recommended way to
+  interact with the tool.
+- **Direct script access** (advanced): the underlying Python scripts and
+  shell scripts can still be called directly, which is useful for scripting
+  or advanced workflows.
 
-.. _usage-ga:
+.. _usage-cli:
+
+Unified CLI : ``optisans``
+---------------------------
+
+All features are accessible through the ``optisans`` command, which is
+available inside the pixi environment.
+
++----------------------------------------------+------------------------------------------+
+| Command                                      | Description                              |
++==============================================+==========================================+
+| ``optisans run protein.pdb``                 | Full GA run, default parameters          |
++----------------------------------------------+------------------------------------------+
+| ``optisans run protein.pdb --config c.ini``  | Full GA run via config file              |
++----------------------------------------------+------------------------------------------+
+| ``optisans deuterate protein.pdb -o out.pdb``| Deuterate a single PDB file              |
++----------------------------------------------+------------------------------------------+
+| ``optisans batch p1.pdb p2.pdb``             | Multi-protein convergence study          |
++----------------------------------------------+------------------------------------------+
+| ``optisans evaluate results_dir/``           | Re-evaluate fitness from existing .dat   |
++----------------------------------------------+------------------------------------------+
+| ``optisans plot results_dir/``               | Generate all result plots                |
++----------------------------------------------+------------------------------------------+
+
+``optisans run``
+~~~~~~~~~~~~~~~~
+
+Runs the complete genetic algorithm pipeline on a PDB file.
+
+.. code-block:: bash
+
+   # Default parameters
+   optisans run myprotein.pdb
+
+   # Custom parameters
+   optisans run myprotein.pdb -p 30 -e 3 -g 10 --seed 42
+
+   # Via config file (CLI arguments override INI values)
+   optisans run myprotein.pdb --config config.ini
+
+Key options:
+
++------------------------------+----------------------------------------------------+
+| Option                       | Description                                        |
++==============================+====================================================+
+| ``-p, --population-size``    | Population size (multiple of 3)                    |
++------------------------------+----------------------------------------------------+
+| ``-e, --elitism``            | Elite individuals preserved (<= population/3)      |
++------------------------------+----------------------------------------------------+
+| ``-g, --generations``        | Number of generations                              |
++------------------------------+----------------------------------------------------+
+| ``--d2o-var``                | Max D2O variation per mutation (0-100)             |
++------------------------------+----------------------------------------------------+
+| ``--seed``                   | Random seed for reproducibility                    |
++------------------------------+----------------------------------------------------+
+| ``--config``                 | config.ini file (CLI args take priority)           |
++------------------------------+----------------------------------------------------+
+| ``--output-dir``             | Output directory                                   |
++------------------------------+----------------------------------------------------+
+| ``--batch-script``           | Path to parallel_process_pdb.sh                    |
++------------------------------+----------------------------------------------------+
+| ``--q-max``                  | Max q for fitness evaluation (A^-1, default 0.3)   |
++------------------------------+----------------------------------------------------+
+| ``--ratio-threshold``        | Min Imax/background ratio (default 0.01)           |
++------------------------------+----------------------------------------------------+
+| ``--d2o``                    | Fix D2O to specific values (repeat flag)           |
++------------------------------+----------------------------------------------------+
+| ``--no-default-ref``         | Skip automatic protonated reference PDB creation   |
++------------------------------+----------------------------------------------------+
+| ``--verbose``                | Enable verbose logging                             |
++------------------------------+----------------------------------------------------+
+
+Run ``optisans run --help`` for the complete option list.
+
+``optisans deuterate``
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Deuterates a single PDB file according to a given specification, without
+running the full genetic algorithm.
+
+.. code-block:: bash
+
+   # Deuterate specific amino acids
+   optisans deuterate protein.pdb -o output.pdb --d2o 50 --aa ALA --aa GLY
+
+   # Deuterate all amino acids
+   optisans deuterate protein.pdb -o output.pdb --d2o 80 --all
+
+Key options:
+
++------------------------------+----------------------------------------------------+
+| Option                       | Description                                        |
++==============================+====================================================+
+| ``-o, --output``             | Output PDB file (required)                         |
++------------------------------+----------------------------------------------------+
+| ``--d2o``                    | D2O percentage for labile H exchange (0-100)       |
++------------------------------+----------------------------------------------------+
+| ``-a, --aa``                 | Amino acid types to deuterate (3-letter codes,     |
+|                              | repeat flag, e.g. --aa ALA --aa GLY)               |
++------------------------------+----------------------------------------------------+
+| ``--all``                    | Deuterate all amino acid types                     |
++------------------------------+----------------------------------------------------+
+| ``--verbose``                | Enable verbose logging                             |
++------------------------------+----------------------------------------------------+
+
+Run ``optisans deuterate --help`` for the complete option list.
+
+``optisans batch``
+~~~~~~~~~~~~~~~~~~~
+
+Runs GA simulations across multiple proteins (convergence study).
+
+.. code-block:: bash
+
+   # One or more proteins
+   optisans batch protein1.pdb protein2.pdb
+
+   # With a config file
+   optisans batch protein1.pdb --config config.ini
+
+Key options:
+
++------------------------------+----------------------------------------------------+
+| Option                       | Description                                        |
++==============================+====================================================+
+| ``--config``                 | config.ini file for GA parameters                  |
++------------------------------+----------------------------------------------------+
+| ``--batch-script``           | Path to run_convergence_simulation_multiprotein.sh |
++------------------------------+----------------------------------------------------+
+
+.. note::
+
+   Seeds are defined inside ``run_convergence_simulation_multiprotein.sh``.
+   To use different seeds, edit the ``SEEDS`` variable in that script or
+   pass ``--config`` with an appropriate config.ini file.
+
+Run ``optisans batch --help`` for the complete option list.
+
+``optisans evaluate``
+~~~~~~~~~~~~~~~~~~~~~~
+
+Re-evaluates the fitness of existing ``.dat`` simulation files against
+reference curves, without running the GA or Pepsi-SANS again.
+
+.. code-block:: bash
+
+   optisans evaluate results_dir/
+
+   # With CSV output
+   optisans evaluate results_dir/ --csv scores.csv
+
+Key options:
+
++------------------------------+----------------------------------------------------+
+| Option                       | Description                                        |
++==============================+====================================================+
+| ``--q-max``                  | Maximum q value for truncation (A^-1, default 0.3) |
++------------------------------+----------------------------------------------------+
+| ``--ratio-threshold``        | Min Imax/background ratio (default 0.01)           |
++------------------------------+----------------------------------------------------+
+| ``--csv``                    | CSV output file for fitness scores                 |
++------------------------------+----------------------------------------------------+
+| ``--verbose``                | Enable verbose logging                             |
++------------------------------+----------------------------------------------------+
+
+Run ``optisans evaluate --help`` for the complete option list.
+
+``optisans plot``
+~~~~~~~~~~~~~~~~~~
+
+Generates result plots: fitness evolution and D2O vs %D scatter plots.
+Both plot types are generated by default.
+
+.. code-block:: bash
+
+   # All plots
+   optisans plot results_dir/
+
+   # Fitness evolution plot only, with AA annotation grid
+   optisans plot results_dir/ --annotate --fitness-only
+
+   # D2O scatter plots only
+   optisans plot results_dir/ --scatter-only
+
+Key options:
+
++------------------------------+----------------------------------------------------+
+| Option                       | Description                                        |
++==============================+====================================================+
+| ``-o, --output``             | Output path for the fitness plot                   |
++------------------------------+----------------------------------------------------+
+| ``--annotate``               | Add colour grid of deuterated AAs below the plot   |
++------------------------------+----------------------------------------------------+
+| ``--min``                    | With --annotate: show values only on change        |
++------------------------------+----------------------------------------------------+
+| ``--fitness-only``           | Generate only the fitness evolution plot           |
++------------------------------+----------------------------------------------------+
+| ``--scatter-only``           | Generate only the D2O vs %D scatter plots          |
++------------------------------+----------------------------------------------------+
+| ``--interactive``            | Display the plot interactively (matplotlib show)   |
++------------------------------+----------------------------------------------------+
+
+Run ``optisans plot --help`` for the complete option list.
+
+.. _usage-direct:
+
+Direct script access
+--------------------
+
+The individual scripts can still be called directly inside the pixi
+environment. This is useful for advanced use cases, scripting, or when
+explicit control over each step is needed.
+
+.. _usage-direct-ga:
 
 1. Main genetic algorithm workflow
------------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The central entry point is ``generate_deuterated_pdbs.py``. It accepts a
 non-deuterated PDB file (all hydrogens must be explicit and protonated) and
@@ -75,10 +286,10 @@ provided.
 
    python generate_deuterated_pdbs.py myprotein.pdb --config config.ini
 
-.. _usage-convergence:
+.. _usage-direct-convergence:
 
 2. Convergence study (multiple proteins)
------------------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The script ``run_convergence_simulation_multiprotein.sh`` automates running
 the genetic algorithm multiple times for one or more proteins, each with a
@@ -107,10 +318,10 @@ there.
 
 This will run 10 simulations for GFP and 10 for MBP, one per seed.
 
-.. _usage-deuteration:
+.. _usage-direct-deuteration:
 
 3. Standalone PDB deuteration
-------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Deuterate a single PDB file according to a specification, without running the
 full genetic algorithm.
@@ -133,10 +344,10 @@ Flags for each amino acid (``--ALA``, ``--GLY``, etc.) activate deuteration of
 that residue type. Use ``--all`` to deuterate all amino acids. Use
 ``--no-ALA`` etc. to exclude a specific type when combined with ``--all``.
 
-.. _usage-fitness:
+.. _usage-direct-fitness:
 
 4. Standalone fitness evaluation
----------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Evaluate the fitness of existing ``.dat`` simulation files against reference
 curves, without running the GA or Pepsi-SANS again.

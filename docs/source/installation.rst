@@ -41,3 +41,10 @@ manage a virtual environment manually.
 
 Once inside the pixi shell, all scripts can be run directly with ``python`` or
 ``bash`` as shown in the usage sections below.
+
+**optisans CLI**
+
+Once inside the pixi shell, the unified ``optisans`` CLI is available
+directly as a command. You can also invoke it without entering the shell
+using ``pixi run optisans``. Run ``optisans --help`` to see all available
+subcommands.

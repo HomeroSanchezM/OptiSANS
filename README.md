@@ -23,11 +23,37 @@ The main script `generate_deuterated_pdbs.py` orchestrates the entire workflow, 
 All components can also be used independently as command-line tools.
 
 ---
+
+## Quick start
+
+The project provides a single unified command-line interface called `optisans`
+that wraps all functionality behind clear subcommands:
+
+```bash
+optisans run protein.pdb                              # full GA, default params
+optisans run protein.pdb -p 60 -g 50 --seed 42       # custom params
+optisans run protein.pdb --config config.ini          # via config file
+optisans deuterate protein.pdb -o out.pdb --d2o 50 --aa ALA --aa GLY
+optisans batch protein1.pdb protein2.pdb              # multi-protein
+optisans batch protein1.pdb --config config.ini       # batch via config
+optisans evaluate results_dir/                        # re-evaluate fitness
+optisans plot results_dir/                            # all plots
+optisans plot results_dir/ --annotate --fitness-only  # fitness plot only
+```
+
+Run `optisans --help` or `optisans <subcommand> --help` for the full list
+of options.
+
+The `optisans` command is available after entering the pixi environment
+(`pixi shell`) or via `pixi run optisans`.
+
+---
+
 ## Requirements
 
 - `Pepsi-SANS` 3.0 (Linux executable in `./Pepsi-SANS-Linux/Pepsi-SANS`)
 - `Python` >= 3.11
-- Python packages : 
+- Python packages :
   - `numpy` >= 2.4.1, < 3
   - `dataclasses` >= 0.8, < 0.9
   - `biopython` >= 1.86, < 2
@@ -59,13 +85,15 @@ cd SANS_Deuteration_Paramerer_Optimization
 pixi shell
 ```
 
-This command reads the `pixi.toml` / `pyproject.toml` file and installs all required packages into an isolated pixi environment automatically. You do not need to manage a virtual environment manually.
+This command reads the `pyproject.toml` file and installs all required packages into an isolated pixi environment automatically. You do not need to manage a virtual environment manually.
 
-Once inside the pixi shell, all scripts can be run directly with `python` or `bash` as shown in the usage sections below.
+Once inside the pixi shell, the `optisans` CLI is available directly as a command, in addition to the individual scripts. You can also invoke it without entering the shell using `pixi run optisans`.
 
 ---
 
-## Usage
+## Usage — direct script access
+
+The individual scripts can still be called directly. This is useful for advanced use cases, scripting, or when you prefer explicit control over each step.
 
 ### 1. Main script: full genetic algorithm workflow
 
