@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Optional, List
 
 # Ensure sibling modules in src/ are importable when running as an entry point.
-# The editable install puts the project root on sys.path, not src/ itself.
 _src_dir = str(Path(__file__).resolve().parent)
 if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
@@ -17,9 +16,30 @@ import typer
 app = typer.Typer(
     name="optisans",
     help="Protein deuteration optimization for SANS experiments.",
-    no_args_is_help=True,
+    
     add_completion=False,
 )
+
+BANNER = r"""
+                                                                          
+ ________  ________  _________  ___  ________  ________  ________   ________      
+|\   __  \|\   __  \|\___   ___\\  \|\   ____\|\   __  \|\   ___  \|\   ____\     
+\ \  \|\  \ \  \|\  \|___ \  \_\ \  \ \  \___|\ \  \|\  \ \  \\ \  \ \  \___|_    
+ \ \  \\\  \ \   ____\   \ \  \ \ \  \ \_____  \ \   __  \ \  \\ \  \ \_____  \   
+  \ \  \\\  \ \  \___|    \ \  \ \ \  \|____|\  \ \  \ \  \ \  \\ \  \|____|\  \  
+   \ \_______\ \__\        \ \__\ \ \__\____\_\  \ \__\ \__\ \__\\ \__\____\_\  \ 
+    \|_______|\|__|         \|__|  \|__|\_________\|__|\|__|\|__| \|__|\_________\
+                                       \|_________|                   \|_________|
+ 
+"""
+
+
+@app.callback(invoke_without_command=True)
+def _banner(ctx: typer.Context) -> None:
+    """Print the OptiSANS banner, then run the requested subcommand."""
+    typer.echo(BANNER)
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
 
 VALID_AA = {
     "ALA", "ARG", "ASN", "ASP", "CYS", "GLU", "GLN", "GLY", "HIS",
@@ -40,7 +60,7 @@ def run(
     ),
     generations: Optional[int] = typer.Option(
         None, "-g", "--generations",
-        help="Number of generations to run.",
+        help="Maximum number of generations to run.",
     ),
     elitism: Optional[int] = typer.Option(
         None, "-e", "--elitism",
@@ -53,6 +73,13 @@ def run(
     seed: Optional[int] = typer.Option(
         None, "--seed",
         help="Random seed for reproducibility.",
+    ),
+    patience: Optional[int] = typer.Option(
+        None, "--patience",
+        help=(
+            "Early stopping: number of consecutive generations without fitness "
+            "improvement before stopping. Default: 50. Set to 0 to disable."
+        ),
     ),
     config: Optional[Path] = typer.Option(
         None, "--config",
@@ -100,6 +127,8 @@ def run(
         argv += ["--d2o-var", str(d2o_var)]
     if seed is not None:
         argv += ["--seed", str(seed)]
+    if patience is not None:
+        argv += ["--patience", str(patience)]
     if config is not None:
         argv += ["--config", str(config)]
     if output_dir is not None:

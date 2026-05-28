@@ -16,6 +16,7 @@ Usage examples:
   python generate_deuterated_pdbs.py input.pdb --no_default_ref --ref ref1.pdb ref2.pdb
   python generate_deuterated_pdbs.py input.pdb --ref extra_ref.pdb
   python generate_deuterated_pdbs.py input.pdb -p 60 -e 5 -g 20 --seed 123
+  python generate_deuterated_pdbs.py input.pdb -g 500 --patience 50
 """
 
 import os
@@ -51,12 +52,34 @@ from fitness_evaluation import evaluate_population_fitness
 #                           LOGGING CONFIGURATION
 # ============================================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%H:%M:%S'
-)
-logger = logging.getLogger(__name__)
+class _CleanFormatter(logging.Formatter):
+    """
+    Custom formatter:
+      - INFO  → '12:34:56  message'          (no level tag)
+      - WARNING/ERROR/CRITICAL → '12:34:56  WARNING: message'
+    """
+    _FMT_PLAIN = '%(asctime)s  %(message)s'
+    _FMT_LEVEL = '%(asctime)s  %(levelname)s: %(message)s'
+    _DATEFMT   = '%H:%M:%S'
+
+    def format(self, record: logging.LogRecord) -> str:
+        fmt = (self._FMT_PLAIN
+               if record.levelno < logging.WARNING
+               else self._FMT_LEVEL)
+        return logging.Formatter(fmt, datefmt=self._DATEFMT).format(record)
+
+
+def _setup_logging(level: int = logging.INFO) -> logging.Logger:
+    handler = logging.StreamHandler()
+    handler.setFormatter(_CleanFormatter())
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(level)
+    return logging.getLogger(__name__)
+
+
+logger = _setup_logging()
 
 # AA display labels matching canonical AMINO_ACIDS order (used for plots)
 _AA_PLOT_LABELS = [
@@ -149,6 +172,14 @@ def parse_arguments():
     exc = parser.add_argument_group('Execution parameters')
     exc.add_argument('-g', '--generations', type=int)
     exc.add_argument('--seed', type=int)
+    exc.add_argument(
+        '--patience', type=int, default=None,
+        help=(
+            'Early stopping: number of consecutive generations without fitness '
+            'improvement before stopping (default: 50). '
+            'Set to 0 to disable early stopping entirely.'
+        ),
+    )
 
     # ---- Fitness ----
     fit = parser.add_argument_group('Fitness evaluation parameters')
@@ -162,7 +193,7 @@ def parse_arguments():
 
     args = parser.parse_args()
     if args.verbose:
-        logger.setLevel(logging.DEBUG)
+        _setup_logging(logging.DEBUG)
 
     return args
 
@@ -175,10 +206,13 @@ def load_config_ini(path: str) -> Dict[str, Any]:
     """
     Load genetic algorithm configuration from an INI file.
 
-    The [RESTRICTIONS] section is expected to contain 20 boolean entries
-    (one per canonical AA).  This function automatically converts them to the
-    18-element effective restriction vector used by the chromosome, applying
-    OR logic for linked pairs (ASN+ASP, GLU+GLN).
+    Supported sections:
+      [POPULATION]  population_size, elitism, d2o_variation_rate
+      [GENETIC]     mutation_rate, crossover_rate
+      [EXECUTION]   generations, seed, patience
+      [RESTRICTIONS] one bool per canonical AA (20 entries)
+      [FITNESS]     q_max, ratio_threshold
+      [D2O]         d2o (space-separated integers or "None")
     """
     if not Path(path).exists():
         raise FileNotFoundError(f"Config file not found: {path}")
@@ -200,6 +234,9 @@ def load_config_ini(path: str) -> Dict[str, Any]:
         cfg["generations"] = config.getint("EXECUTION", "generations", fallback=None)
         seed_val = config.get("EXECUTION", "seed", fallback=None)
         cfg["seed"] = int(seed_val) if seed_val and seed_val.strip() != "" else None
+        # patience: optional entry in [EXECUTION]
+        patience_val = config.get("EXECUTION", "patience", fallback=None)
+        cfg["patience"] = int(patience_val) if patience_val and patience_val.strip() != "" else None
 
     if config.has_section("RESTRICTIONS"):
         # Read 20 per-AA booleans, then merge linked pairs to get 18 effective genes
@@ -209,13 +246,13 @@ def load_config_ini(path: str) -> Dict[str, Any]:
         ]
         cfg["restrictions"] = merge_restrictions_to_18(restrictions_20)
     else:
-        cfg["restrictions"] = [True] * N_EFFECTIVE_AA   # default: all modifiable
+        cfg["restrictions"] = [True] * N_EFFECTIVE_AA
 
     if config.has_section("FITNESS"):
         cfg["q_max"]           = config.getfloat("FITNESS", "q_max",           fallback=None)
         cfg["ratio_threshold"] = config.getfloat("FITNESS", "ratio_threshold",  fallback=None)
 
-    # [D2O] section — optional fixed D2O list
+    # [D2O] section, optional fixed D2O list
     raw_d2o = config.get("D2O", "d2o", fallback="None").strip()
     cfg["d2o"] = None if raw_d2o.lower() == "none" else [int(x) for x in raw_d2o.split()]
 
@@ -238,6 +275,7 @@ def merge_config(cli_args: argparse.Namespace,
         "d2o_variation_rate": pick(cli_args.d2o_variation_rate, ini_cfg.get("d2o_variation_rate"),5),
         "generations":        pick(cli_args.generations, ini_cfg.get("generations"), 1),
         "seed":               pick(cli_args.seed,         ini_cfg.get("seed"),         1),
+        "patience":           pick(cli_args.patience,     ini_cfg.get("patience"),     50),
         "q_max":              pick(cli_args.q_max,            ini_cfg.get("q_max"),            0.3),
         "ratio_threshold":    pick(cli_args.ratio_threshold,  ini_cfg.get("ratio_threshold"),  0.01),
         "restrictions":       ini_cfg.get("restrictions", [True] * N_EFFECTIVE_AA),
@@ -268,7 +306,11 @@ def validate_config(cfg: Dict[str, Any]) -> None:
     if cfg["generations"] < 1:
         raise ValueError("generations must be >= 1")
 
-    # Accept 18 (effective) or 20 (canonical) restriction lengths; auto-convert 20->18
+    # patience: 0 means disabled; any positive int is valid
+    patience = cfg.get("patience", 50)
+    if patience is not None and patience < 0:
+        raise ValueError("patience must be >= 0 (use 0 to disable early stopping)")
+
     restr_len = len(cfg["restrictions"])
     if restr_len == len(AMINO_ACIDS):
         cfg["restrictions"] = merge_restrictions_to_18(cfg["restrictions"])
@@ -345,13 +387,12 @@ def apply_missing_aa_to_restrictions(restrictions: List[bool],
     Returns:
         New 18-element list with absent-AA genes disabled.
     """
-    from GA import LINKED_AA_GROUPS  # avoid circular at module level
+    from GA import LINKED_AA_GROUPS
 
     updated = list(restrictions)
     missing_set = set(missing_aa)
 
     for gene_idx, group in enumerate(LINKED_AA_GROUPS):
-        # Disable the gene only when every AA in the group is absent
         if all(code in missing_set for code in group):
             if updated[gene_idx]:
                 logger.info(
@@ -365,26 +406,10 @@ def apply_missing_aa_to_restrictions(restrictions: List[bool],
 
 def generate_protein_plots(pdb_analyzer: PdbDeuteration,
                             plot_dir: Path) -> None:
-    """
-    Generate and save two barplot PNGs into *plot_dir*:
-
-      aa_count.png       — number of unique residues per AA type
-                           (mirrors barplot.py)
-      aa_hydrogen_count.png — total H atoms contributed by each AA type
-                           (mirrors barplot_H.py)
-
-    Both plots use horizontal bars with the canonical AA order reversed
-    (Val at top, Ala at bottom) to match the reference scripts.
-
-    Args:
-        pdb_analyzer: A PdbDeuteration instance whose aa_count and
-                      aa_hydrogen_count attributes have been populated
-                      (i.e. GA has completed).
-        plot_dir:     Directory where PNG files will be written.
-    """
+    """Generate and save two barplot PNGs (residue counts + H counts)."""
     try:
         import matplotlib
-        matplotlib.use('Agg')   # non-interactive backend for file output
+        matplotlib.use('Agg')
         import matplotlib.pyplot as plt
     except ImportError:
         logger.warning("matplotlib not available — skipping protein composition plots")
@@ -399,11 +424,11 @@ def generate_protein_plots(pdb_analyzer: PdbDeuteration,
     codes_rev  = codes[::-1]
     labels_rev = labels[::-1]
 
-    #  Plot 1 : AA residue counts                                        
+    # Plot 1: AA residue counts
     values_count = [pdb_analyzer.aa_count.get(code, 0) for code in codes_rev]
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    bars = ax.barh(labels_rev, values_count, color='steelblue')
+    ax.barh(labels_rev, values_count, color='steelblue')
     ax.set_xlabel("Number of residues", fontsize=12)
     ax.set_ylabel("Amino acid", fontsize=12)
     ax.set_title("Residue count per amino acid type", fontsize=13, fontweight='bold')
@@ -420,8 +445,7 @@ def generate_protein_plots(pdb_analyzer: PdbDeuteration,
     plt.close()
     logger.info(f"  Plot saved : {out_count.name}")
 
-   
-    #  Plot 2 : H atoms per AA type                                      
+    # Plot 2: H atoms per AA type
     values_h = [pdb_analyzer.aa_hydrogen_count.get(code, 0) for code in codes_rev]
 
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -455,7 +479,7 @@ def create_protonated_reference_pdbs(pdb_file: str,
       - protonated protein in H2O  (no deuteration, d2o=0)
     """
     logger.info(">>> Creating default reference PDBs (protonated in D2O / H2O)")
-    ref_deut_vector = [False] * len(AMINO_ACIDS)   # 20-element, no AA deuteration
+    ref_deut_vector = [False] * len(AMINO_ACIDS)
 
     # Protonated in D2O (all labile H exchanged)
     deut_pdb  = PdbDeuteration(pdb_file)
@@ -587,22 +611,7 @@ def evaluate_fitness(primus_dir: str,
                      ratio_threshold: float,
                      deut_ref: Optional[str] = None,
                      prot_ref: Optional[str] = None) -> None:
-    """
-    Evaluate fitness for all chromosomes by matching .dat filenames.
-
-    Calls evaluate_population_fitness() which returns raw fitness scores for
-    every .dat file in primus_dir (alphabetical order).  Each score is then
-    mapped back to the corresponding chromosome via the chromosome's expected
-    filename stem.
-
-    Args:
-        primus_dir:       Path to the Pepsi-SANS output directory.
-        population:       Full current population (tier-1 + tier-2 + tier-3).
-        q_max:            q truncation limit.
-        ratio_threshold:  Minimum Imax/background ratio threshold.
-        deut_ref:         Exact deuterated reference filename (or None for auto-detect).
-        prot_ref:         Exact protonated reference filename (or None for auto-detect).
-    """
+    """Evaluate fitness for all chromosomes by matching .dat filenames."""
     logger.info("=" * 70)
     logger.info(">>> Evaluating fitness from SANS data…")
     logger.info("=" * 70)
@@ -626,7 +635,7 @@ def evaluate_fitness(primus_dir: str,
         stem = Path(file_path).stem
         if stem in chrom_by_stem:
             chrom_by_stem[stem].fitness = float(score)
-            chrom_by_stem[stem].ratio = float(ratio)
+            chrom_by_stem[stem].ratio   = float(ratio)
             matched += 1
         else:
             unmatched_files.append(Path(file_path).name)
@@ -695,7 +704,7 @@ def cleanup_non_tier1_files(output_dir: Path,
 def display_population_summary(population: List[Chromosome],
                                 sorted_indices: List[int],
                                 generation: int) -> None:
-    """Log a short summary of the top-3 chromosomes using their original filenames."""
+    """Log a short summary of the top-3 chromosomes."""
     top_n = min(3, len(sorted_indices))
     logger.info(f"\n>>> Generation {generation} — top {top_n} chromosome(s):")
     for rank in range(top_n):
@@ -758,9 +767,7 @@ def save_population_summary(population: List[Chromosome],
 def save_best_fitness_summary(best_chrom: Chromosome,
                                generation: int,
                                summary_path: Path) -> None:
-    """
-    Append one row per generation to the best-fitness CSV.
-    """
+    """Append one row per generation to the best-fitness CSV."""
     deut_aas = [
         EFFECTIVE_AMINO_ACIDS[i].code_3
         for i, d in enumerate(best_chrom.deuteration)
@@ -812,6 +819,88 @@ def check_fitness_non_decreasing(population, sorted_indices, previous_best, gene
 
 
 # ============================================================================
+#                       EARLY STOPPING TRACKER
+# ============================================================================
+
+class EarlyStoppingTracker:
+    """
+    Tracks the best fitness seen so far and counts how many consecutive
+    generations have passed without a strict improvement.
+
+    Usage::
+
+        tracker = EarlyStoppingTracker(patience=50)
+        ...
+        if tracker.update(current_best_fitness):
+            break   # stop the loop
+
+    A fitness value is considered an *improvement* when it exceeds the
+    current best by more than ``min_delta`` (default 1e-10, i.e. essentially
+    any strictly positive change counts).
+
+    Setting ``patience=0`` disables early stopping entirely.
+    """
+
+    def __init__(self, patience: int = 50, min_delta: float = 1e-10):
+        """
+        Args:
+            patience:  Number of consecutive generations without improvement
+                       before ``update()`` returns True.  0 = disabled.
+            min_delta: Minimum absolute improvement to reset the counter.
+        """
+        self.patience   = patience
+        self.min_delta  = min_delta
+        self.best       = -float('inf')
+        self.no_improve = 0          # consecutive generations without improvement
+        self.triggered  = False      # True once early stopping fires
+
+    # ------------------------------------------------------------------
+    def update(self, current_fitness: float) -> bool:
+        """
+        Record *current_fitness* for the latest generation.
+
+        Returns:
+            True  → early stopping criterion met; the caller should stop.
+            False → keep running.
+        """
+        if self.patience == 0:
+            return False   # early stopping is disabled
+
+        if current_fitness > self.best + self.min_delta:
+            self.best       = current_fitness
+            self.no_improve = 0
+            logger.debug(
+                f"  [EarlyStopping] New best: {self.best:.8f}  "
+                f"(counter reset to 0)"
+            )
+        else:
+            self.no_improve += 1
+            logger.info(
+                f"  [EarlyStopping] No improvement for {self.no_improve} "
+                f"generation(s)  (patience={self.patience}, "
+                f"best={self.best:.8f}, current={current_fitness:.8f})"
+            )
+
+        if self.no_improve >= self.patience:
+            self.triggered = True
+            return True
+
+        return False
+
+    # ------------------------------------------------------------------
+    @property
+    def status_line(self) -> str:
+        """Human-readable one-liner for logging."""
+        if self.patience == 0:
+            return "Early stopping: DISABLED"
+        return (
+            f"Early stopping: patience={self.patience}  "
+            f"no-improve streak={self.no_improve}  "
+            f"best={self.best:.8f}"
+        )
+
+
+# ============================================================================
 #                       FINAL RESULT FOLDER
 # ============================================================================
 
@@ -835,7 +924,7 @@ def create_final_result_folder(best_chrom, pdb_stem, output_dir,
     logger.info(">>> Assembling final result folder")
     logger.info(f"  Destination : {final_dir.absolute()}")
 
-    # Single-row CSV (header + best row)
+    # Single-row CSV
     csv_dest = final_dir / f"{base_name}.csv"
     with open(best_summary_path, "r", encoding="utf-8") as src_fh:
         lines = [l for l in src_fh.readlines() if l.strip()]
@@ -918,7 +1007,7 @@ def main():
         logger.error(f"Batch script not found: {cfg['batch_script']}")
         sys.exit(1)
 
-    # ---------- Analyse PDB composition BEFORE creating population ----------
+    # ---------- Analyse PDB composition ----------
     logger.info("=" * 70)
     logger.info(">>> Analysing protein composition")
     logger.info("=" * 70)
@@ -947,6 +1036,10 @@ def main():
     )
 
     # ---------- Display configuration ----------
+    patience      = cfg.get("patience", 50)
+    patience_info = (f"{patience} generation(s) without improvement"
+                     if patience > 0 else "DISABLED")
+
     logger.info("=" * 70)
     logger.info("                SANS DEUTERATION OPTIMISATION")
     logger.info("=" * 70)
@@ -957,7 +1050,8 @@ def main():
         logger.info(f"D2O variation rate   : ±{cfg['d2o_variation_rate']}%")
     else:
         logger.info(f"D2O fixed values     : {cfg['d2o']}")
-    logger.info(f"Generations          : {cfg['generations']}")
+    logger.info(f"Generations (max)    : {cfg['generations']}")
+    logger.info(f"Early stopping       : {patience_info}")
     logger.info(f"Q max (fitness)      : {cfg['q_max']} Å⁻¹")
     logger.info(f"Ratio threshold      : {cfg['ratio_threshold']}")
     logger.info(f"Effective gene count : {N_EFFECTIVE_AA}  "
@@ -987,14 +1081,17 @@ def main():
 
     # ---------- Initialise population generator ----------
     generator = PopulationGenerator(
-        aa_list=EFFECTIVE_AMINO_ACIDS,        # 18 effective genes
-        modifiable=cfg['restrictions'],        # 18-element list (missing AAs already disabled)
+        aa_list=EFFECTIVE_AMINO_ACIDS,
+        modifiable=cfg['restrictions'],
         population_size=cfg['population_size'],
         elitism=cfg['elitism'],
         d2o_variation_rate=cfg['d2o_variation_rate'],
         d2o=cfg['d2o'],
     )
     tier_size = cfg['population_size'] // 3
+
+    # ---------- Early stopping tracker ----------
+    es_tracker = EarlyStoppingTracker(patience=patience)
 
     # ---- GENERATION 0 ----
     logger.info("\n" + "=" * 70)
@@ -1012,7 +1109,13 @@ def main():
     save_population_summary(population, sorted_indices, output_dir, 0)
     save_best_fitness_summary(population[sorted_indices[0]], 0, best_summary_path)
 
+    # Feed generation 0 into the early stopping tracker (never triggers on gen 0,
+    # because no_improve starts at 0 and patience >= 1 is always satisfied).
+    es_tracker.update(previous_best_fitness)
+
     # ---- SUBSEQUENT GENERATIONS ----
+    early_stopped = False
+
     for gen in range(1, cfg['generations']):
         logger.info("\n" + "=" * 70)
         logger.info(f">>> GENERATION {gen} — population evolution")
@@ -1024,7 +1127,7 @@ def main():
             new_generation=gen,
         )
 
-        tier1 = new_population[:tier_size]
+        tier1       = new_population[:tier_size]
         tier2_and_3 = new_population[tier_size:]
 
         cleanup_non_tier1_files(output_dir, primus_dir, tier1)
@@ -1045,17 +1148,39 @@ def main():
 
         population = new_population
 
+        # ---- Early stopping check ----
+        if es_tracker.update(previous_best_fitness):
+            logger.info("\n" + "=" * 70)
+            logger.info(
+                f"*** EARLY STOPPING triggered at generation {gen} ***"
+            )
+            logger.info(
+                f"    No fitness improvement over the last "
+                f"{es_tracker.patience} generation(s)."
+            )
+            logger.info(
+                f"    Best fitness achieved: {es_tracker.best:.8f}"
+            )
+            logger.info("=" * 70)
+            early_stopped = True
+            break
+
+        logger.debug(es_tracker.status_line)
+
     # ---- FINAL SUMMARY ----
     logger.info("\n" + "=" * 70)
-    logger.info("GENETIC ALGORITHM COMPLETED SUCCESSFULLY!")
+    if early_stopped:
+        logger.info("GENETIC ALGORITHM STOPPED EARLY (early stopping criterion met).")
+    else:
+        logger.info("GENETIC ALGORITHM COMPLETED SUCCESSFULLY!")
     logger.info("=" * 70)
+
     best = population[sorted_indices[0]]
-    logger.info("Best solution:")
+    logger.info("Best solution found:")
     logger.info(f"  File    : {get_pdb_filename(best)}")
     logger.info(f"  D2O     : {best.d2o}%")
-    # Report effective genes deuterated (max 18) + canonical AAs affected (max 20)
-    deut_genes   = sum(best.deuteration)
-    deut_vec_20  = expand_deuteration_vector(best.deuteration)
+    deut_genes    = sum(best.deuteration)
+    deut_vec_20   = expand_deuteration_vector(best.deuteration)
     deut_aa_count = sum(deut_vec_20)
     logger.info(f"  Deut. genes : {deut_genes}/18 effective genes  "
                 f"→ {deut_aa_count}/20 canonical AAs deuterated")
