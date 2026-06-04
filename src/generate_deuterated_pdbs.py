@@ -734,9 +734,9 @@ def save_population_summary(population: List[Chromosome],
                       if population[i].fitness is not None]
 
     with open(summary_file, 'w', encoding='utf-8') as fh:
-        fh.write("=" * 150 + "\n")
+        fh.write("=" * 170 + "\n")
         fh.write(f"POPULATION SUMMARY - GENERATION {generation}\n")
-        fh.write("=" * 150 + "\n\n")
+        fh.write("=" * 170 + "\n\n")
         fh.write(f"Population size : {len(population)}\n")
         if fitness_values:
             fh.write(f"Best fitness    : {max(fitness_values):.6f}\n")
@@ -745,21 +745,25 @@ def save_population_summary(population: List[Chromosome],
         fh.write("\n")
         fh.write(
             f"{'Rank':<6} {'PDB filename (creation name)':<55} "
-            f"{'D2O%':<6} {'AA':<5} {'ratio':<14} {'Fitness':<14} "
+            f"{'D2O%':<6} {'Pattern':<20} {'AA':<5} {'ratio':<14} {'Fitness':<14} "
             f"{'D%':<14} {'Non_labile_D%'} {'Created':<12}\n"
         )
-        fh.write("-" * 150 + "\n")
+        fh.write("-" * 170 + "\n")
         for rank, idx in enumerate(sorted_indices, 1):
             chrom = population[idx]
             filename = get_pdb_filename(chrom)
+            # format(bits, '018b') stores MSB first: bit 17 (VAL) at position 0,
+            # bit 0 (ALA) at position 17. chrom.deuteration[0] = ALA (LSB),
+            # so we iterate in reverse to match the HDF5 pattern convention.
+            pat_str = "".join("1" if d else "0" for d in reversed(chrom.deuteration))
             fh.write(
                 f"{rank:<6} {filename:<55} {chrom.d2o:<6} "
-                f"{sum(chrom.deuteration):<5} {chrom.ratio:<14.3f} {chrom.fitness:<14.6f} "
+                f"{pat_str:<20} {sum(chrom.deuteration):<5} {chrom.ratio:<14.3f} {chrom.fitness:<14.6f} "
                 f"{(chrom.D/(chrom.H + chrom.D))*100:<14.2f} "
                 f"{(chrom.non_labile_D / (chrom.H + chrom.D))*100:<14.2f}"
                 f"gen{chrom.generation:02d}_idx{chrom.index:03d}\n"
             )
-        fh.write("=" * 150 + "\n")
+        fh.write("=" * 170 + "\n")
 
     logger.info(f"  Summary saved : {summary_file.name}")
 
