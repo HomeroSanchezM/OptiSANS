@@ -75,7 +75,7 @@ curl -fsSL https://pixi.sh/install.sh | sh
 **Step 2 — Clone the repository**
 
 ```bash
-git clone https://github.com/HomeroSanchezM/SANS_Deuteration_Paramerer_Optimization.git
+git clone https://github.com/HomeroSanchezM/OptiSANS.git
 cd SANS_Deuteration_Paramerer_Optimization
 ```
 
