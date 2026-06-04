@@ -77,7 +77,7 @@ curl -fsSL https://pixi.sh/install.sh | sh
 
 ```bash
 git clone https://github.com/HomeroSanchezM/OptiSANS.git
-cd SANS_Deuteration_Paramerer_Optimization
+cd OptiSANS
 ```
 
 **Step 3 — Enter the pixi environment**
