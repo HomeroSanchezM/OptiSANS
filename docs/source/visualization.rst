@@ -78,3 +78,87 @@ For each generation, a scatter plot is saved as
 - **Point transparency**: chromosomes with zero fitness are nearly transparent.
 - **Best individual**: highlighted with a red circle outline.
 - **Colour bar**: maps fitness values to colours.
+
+Recycle contrast-variation plots
+--------------------------------
+
+The ``optisans recycle`` command generates two sets of diagnostic plots
+inside the ``{stem}_recycle_primus_out/`` output directory.
+
+Fitness vs D₂O%
+^^^^^^^^^^^^^^^
+
+``plot_contrast_fitness.py`` reads ``result.csv`` (produced by
+``optisans recycle``) and generates a scatter plot of fitness score vs
+D₂O percentage for every point in the contrast-variation scan.
+
+**Usage (standalone):**
+
+.. code-block:: bash
+
+   python plot_contrast_fitness.py result.csv --output fitness_vs_d2o.png
+
+**Programmatic interface:**
+
+.. code-block:: python
+
+   from plot_contrast_fitness import plot_fitness_from_csv
+   plot_fitness_from_csv("result.csv", "fitness_vs_d2o.png", label_step=5)
+
+**Options:**
+
++--------------------+----------------------------------------------------------+
+| Option             | Description                                              |
++====================+==========================================================+
+| ``csv_file``       | Path to ``result.csv`` (positional).                     |
++--------------------+----------------------------------------------------------+
+| ``--output``       | Output image path (e.g. ``fitness_vs_d2o.png``).        |
++--------------------+----------------------------------------------------------+
+| ``--no-labels``    | Suppress per-point annotations.                          |
++--------------------+----------------------------------------------------------+
+| ``--label-step``   | Show a label every N points (default: 1).               |
++--------------------+----------------------------------------------------------+
+| ``--title``        | Custom plot title.                                       |
++--------------------+----------------------------------------------------------+
+
+**Output:**
+
+- **X-axis**: D₂O percentage (0–100).
+- **Y-axis**: Fitness score.
+- **Points**: colour-coded — blue for valid curves, red for curves that
+  failed the ratio check (fitness = 0).
+- **Connecting line**: light blue line through all points.
+- **Annotations**: per-point labels showing ``f=`` (fitness) and ``r=``
+  (ratio), displayed every ``--label-step`` points.
+
+I(0) vs D₂O%
+^^^^^^^^^^^^
+
+``plot_i0_d2o.py`` reads all ``.dat`` files in a directory, extracts I(0)
+(the first data point of the intensity column), and plots it against the
+D₂O percentage parsed from each filename.
+
+**Usage (standalone):**
+
+.. code-block:: bash
+
+   python plot_i0_d2o.py <folder>
+   python plot_i0_d2o.py <folder> <output_prefix>
+
+**Programmatic interface:**
+
+.. code-block:: python
+
+   from plot_i0_d2o import plot_i0_vs_d2o
+   plot_i0_vs_d2o("/path/to/sans_dir", "/path/to/sans_dir/I0_vs_d2o")
+
+**Output:**
+
+Three images are generated (``{output_prefix}_linear.png``,
+``{output_prefix}_log.png``, ``{output_prefix}_combined.png``):
+
+- **Linear scale**: I(0) vs D₂O% with the match-point (minimum |I(0)|)
+  annotated as a vertical dashed line.
+- **Log scale**: |I(0)| vs D₂O% on a logarithmic y-axis. Points where
+  I(0) = 0 (exact match point) are marked with orange triangles.
+- **Combined**: both panels side by side in a single figure.

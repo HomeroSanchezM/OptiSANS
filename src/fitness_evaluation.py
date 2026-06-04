@@ -317,7 +317,7 @@ def scaling_and_compare(q, I, references, q_max, ratio):
         area = calculate_area_difference(q_trunc, I_scaled, I_ref_regrid)
         fitness_product *= area
 
-    return fitness_product * (ratio ** 0) *100000
+    return fitness_product * (ratio ** 2) *100000000
 
 
 def fitness(q, I, references, q_max, file_path, ratio_threshold=0.01):

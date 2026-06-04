@@ -44,3 +44,21 @@ Python modules.
    :undoc-members:
    :show-inheritance:
    :noindex:
+
+.. automodule:: recycle
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :noindex:
+
+.. automodule:: plot_contrast_fitness
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :noindex:
+
+.. automodule:: plot_i0_d2o
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :noindex:

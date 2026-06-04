@@ -29,6 +29,8 @@ available inside the pixi environment.
 +----------------------------------------------+------------------------------------------+
 | ``optisans batch p1.pdb p2.pdb``             | Multi-protein convergence study          |
 +----------------------------------------------+------------------------------------------+
+| ``optisans recycle protein.pdb --d2o 42``    | D2O contrast variation scan              |
++----------------------------------------------+------------------------------------------+
 | ``optisans evaluate results_dir/``           | Re-evaluate fitness from existing .dat   |
 +----------------------------------------------+------------------------------------------+
 | ``optisans plot results_dir/``               | Generate all result plots                |
@@ -147,6 +149,110 @@ Key options:
    pass ``--config`` with an appropriate config.ini file.
 
 Run ``optisans batch --help`` for the complete option list.
+
+``optisans recycle``
+~~~~~~~~~~~~~~~~~~~~~
+
+Performs a **full D2O contrast-variation scan** (0–100 %) for a fixed
+amino-acid deuteration pattern.  Unlike the GA (:command:`optisans run`),
+which *searches* for the optimal pattern, :command:`recycle` sweeps every
+D2O percentage while keeping the deuteration pattern fixed — useful for
+analysing how fitness and I(0) vary with solvent contrast for a given
+pattern.
+
+.. code-block:: bash
+
+   # Full scan with LEU+LYS deuteration, reference at D2O = 42%
+   optisans recycle protein.pdb --d2o 42 --aa LEU --aa LYS
+
+   # Coarser scan (every 5%) with custom output directory
+   optisans recycle protein.pdb --d2o 50 --aa LEU --step 5 --output-dir /tmp/scan
+
+   # No AA deuteration — only labile-H exchange varies
+   optisans recycle protein.pdb --d2o 100
+
+   # Fewer parallel jobs
+   optisans recycle protein.pdb --d2o 42 --aa LEU --aa LYS -j 20
+
+**Pipeline steps:**
+
+1. **Generate PDB files** — one per D2O percentage (0, 1, 2, …, 100 by
+   default) using the specified AA deuteration pattern, plus 2 reference
+   PDBs (no AA deuteration at D2O = 0 and D2O = 100).
+2. **Run Pepsi-SANS** — simulates SANS curves for all PDB files in
+   parallel.
+3. **Assemble 3 reference curves** in ``ref/``: total protonation
+   (D2O = 0), total deuteration (D2O = 100), and the pattern curve at the
+   specified ``--d2o`` value.
+4. **Evaluate fitness** — compares each SANS curve against the 3
+   references; writes ``result.csv``.
+5. **Plot** — generates fitness vs D₂O% and I(0) vs D₂O% plots.
+
+Key options:
+
++------------------------------+----------------------------------------------------+
+| Option                       | Description                                        |
++==============================+====================================================+
+| ``--d2o``                    | D2O percentage (0–100) for the pattern reference   |
+|                              | curve (**required**)                               |
++------------------------------+----------------------------------------------------+
+| ``-a, --aa``                 | Amino acid types to deuterate; repeat for multiple |
+|                              | (e.g. ``--aa LEU --aa LYS``). Omit for no AA       |
+|                              | deuteration                                        |
++------------------------------+----------------------------------------------------+
+| ``--output-dir``             | Base output directory (default:                     |
+|                              | ``{stem}_recycle/``)                               |
++------------------------------+----------------------------------------------------+
+| ``--step``                   | D2O step size for the scan (default: 1)            |
++------------------------------+----------------------------------------------------+
+| ``--batch-script``           | Path to ``parallel_process_pdb.sh``                |
++------------------------------+----------------------------------------------------+
+| ``--q-max``                  | Max q for fitness evaluation (A^-1, default 0.3)   |
++------------------------------+----------------------------------------------------+
+| ``--ratio-threshold``        | Min Imax/background ratio (default 0.01)           |
++------------------------------+----------------------------------------------------+
+| ``-j, --jobs``               | Number of parallel Pepsi-SANS jobs (default 150)   |
++------------------------------+----------------------------------------------------+
+
+**Output structure** (example: ``gfp.pdb --d2o 42 --aa LEU --aa LYS``)::
+
+   gfp_recycle/
+   ├── gfp_recycle_deuterated_pdbs/        # all deuterated PDB files
+   │   ├── _d2o0.pdb
+   │   ├── _d2o1.pdb
+   │   ├── …
+   │   ├── _d2o100.pdb
+   │   └── ref/
+   │       ├── gfp_total_protonation.pdb
+   │       └── gfp_total_deuteration.pdb
+   └── gfp_recycle_primus_out/             # SANS curves + results + plots
+       ├── _d2o0.dat
+       ├── _d2o1.dat
+       ├── …
+       ├── _d2o100.dat
+       ├── result.csv
+       ├── fitness_vs_d2o.png
+       ├── I0_vs_d2o_linear.png
+       ├── I0_vs_d2o_log.png
+       ├── I0_vs_d2o_combined.png
+       └── ref/
+           ├── gfp_total_protonation.dat
+           ├── gfp_total_deuteration.dat
+           └── gfp_pattern_d2o42.dat
+
+.. note::
+
+   ``--d2o`` must be a multiple of ``--step``.  For example,
+   ``--d2o 42 --step 5`` will raise an error (suggest 40 or 45 instead).
+
+.. note::
+
+   When ``--d2o 0`` or ``--d2o 100`` is used, the pattern reference curve
+   will be similar (but not identical) to the total
+   protonation/deuteration reference — the difference is that the pattern
+   curve includes AA non-labile deuteration if ``--aa`` flags are set.
+
+Run ``optisans recycle --help`` for the complete option list.
 
 ``optisans evaluate``
 ~~~~~~~~~~~~~~~~~~~~~~

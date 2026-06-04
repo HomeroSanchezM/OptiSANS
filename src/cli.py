@@ -320,6 +320,99 @@ def evaluate(
 
 
 @app.command()
+def recycle(
+    pdb_file: Path = typer.Argument(
+        ...,
+        exists=True,
+        help="Fully protonated input PDB file.",
+    ),
+    d2o: int = typer.Option(
+        ..., "--d2o",
+        help=(
+            "D2O percentage (0–100) for the pattern reference curve. "
+            "The SANS curve at this exact D2O value (with the requested AA pattern) "
+            "is placed in ref/ as the third fitness reference."
+        ),
+    ),
+    amino_acids: Optional[List[str]] = typer.Option(
+        None, "-a", "--aa",
+        help="Amino acid types to deuterate; repeat the flag for multiple AAs "
+             "(e.g. --aa LEU --aa LYS). Omit to use no AA deuteration.",
+    ),
+    output_dir: Optional[Path] = typer.Option(
+        None, "--output-dir",
+        help="Base output directory (default: {pdb_stem}_recycle/).",
+    ),
+    step: int = typer.Option(
+        1, "--step",
+        help="Step between D2O values in the scan (1 = every percent point, default).",
+    ),
+    batch_script: Path = typer.Option(
+        Path("./parallel_process_pdb.sh"),
+        "--batch-script",
+        help="Path to parallel_process_pdb.sh.",
+    ),
+    q_max: float = typer.Option(
+        0.3, "--q-max",
+        help="Maximum q value for fitness evaluation (Å⁻¹, default 0.3).",
+    ),
+    ratio_threshold: float = typer.Option(
+        0.01, "--ratio-threshold",
+        help="Minimum Imax/background ratio to accept a curve (default 0.01).",
+    ),
+    n_jobs: int = typer.Option(
+        150, "--jobs", "-j",
+        help="Number of parallel Pepsi-SANS jobs (default 150).",
+    ),
+):
+    """
+    Contrast variation scan: generate all D2O PDBs (0–100%) with a fixed
+    deuteration pattern, simulate SANS, evaluate fitness, and produce plots.
+
+    Outputs (inside {pdb_stem}_recycle/ unless --output-dir is set):
+      {stem}_recycle_deuterated_pdbs/   — all deuterated PDB files
+      {stem}_recycle_primus_out/        — Pepsi-SANS .dat files + result.csv + plots
+      {stem}_recycle_primus_out/ref/    — 3 reference SANS curves used for fitness
+    """
+    if amino_acids is None:
+        amino_acids = []
+
+    # Validate AA codes early, before any expensive operations
+    invalid = [aa for aa in amino_acids if aa.upper() not in VALID_AA]
+    if invalid:
+        typer.echo(f"Error: invalid amino acid code(s): {', '.join(invalid)}", err=True)
+        typer.echo(f"Valid codes: {', '.join(sorted(VALID_AA))}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        from recycle import recycle_workflow
+    except ImportError as exc:
+        typer.echo(f"Import error: {exc}", err=True)
+        typer.echo(
+            "Make sure you are running inside the pixi environment: "
+            "pixi run optisans recycle ...",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    try:
+        recycle_workflow(
+            pdb_file=str(pdb_file),
+            d2o_ref=d2o,
+            amino_acids=[aa.upper() for aa in amino_acids],
+            output_dir=str(output_dir) if output_dir is not None else None,
+            batch_script=str(batch_script),
+            d2o_step=step,
+            q_max=q_max,
+            ratio_threshold=ratio_threshold,
+            n_jobs=n_jobs,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
 def plot(
     directory: Path = typer.Argument(
         ...,

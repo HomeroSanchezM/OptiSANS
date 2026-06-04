@@ -36,6 +36,7 @@ optisans run protein.pdb --config config.ini          # via config file
 optisans deuterate protein.pdb -o out.pdb --d2o 50 --aa ALA --aa GLY
 optisans batch protein1.pdb protein2.pdb              # multi-protein
 optisans batch protein1.pdb --config config.ini       # batch via config
+optisans recycle protein.pdb --d2o 42 --aa LEU --aa LYS  # contrast variation scan
 optisans evaluate results_dir/                        # re-evaluate fitness
 optisans plot results_dir/                            # all plots
 optisans plot results_dir/ --annotate --fitness-only  # fitness plot only
@@ -179,6 +180,7 @@ python pdb_deuteration.py pdb_config.ini
 ```
 
 Flags for each amino acid (`--ALA`, `--GLY`, etc.) activate deuteration of that residue type. Use `--all` to deuterate all amino acids. Use `--no-ALA` etc. to exclude a specific type when combined with `--all`.
+
 
 ---
 
