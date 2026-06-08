@@ -16,8 +16,8 @@ import typer
 app = typer.Typer(
     name="optisans",
     help="Protein deuteration optimization for SANS experiments.",
-    
     add_completion=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 BANNER = r"""
@@ -45,6 +45,43 @@ VALID_AA = {
     "ALA", "ARG", "ASN", "ASP", "CYS", "GLU", "GLN", "GLY", "HIS",
     "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
 }
+
+
+@app.command()
+def aa():
+    """Affiche la liste des 20 acides aminés standards avec leurs codes."""
+    AA_TABLE = [
+        ("ALA", "A", "Alanine"),
+        ("ARG", "R", "Arginine"),
+        ("ASN", "N", "Asparagine"),
+        ("ASP", "D", "Aspartic acid"),
+        ("CYS", "C", "Cysteine"),
+        ("GLU", "E", "Glutamic acid"),
+        ("GLN", "Q", "Glutamine"),
+        ("GLY", "G", "Glycine"),
+        ("HIS", "H", "Histidine"),
+        ("ILE", "I", "Isoleucine"),
+        ("LEU", "L", "Leucine"),
+        ("LYS", "K", "Lysine"),
+        ("MET", "M", "Methionine"),
+        ("PHE", "F", "Phenylalanine"),
+        ("PRO", "P", "Proline"),
+        ("SER", "S", "Serine"),
+        ("THR", "T", "Threonine"),
+        ("TRP", "W", "Tryptophan"),
+        ("TYR", "Y", "Tyrosine"),
+        ("VAL", "V", "Valine"),
+    ]
+    typer.echo("\n Amino acids available for deuteration\n")
+    typer.echo(f"  {'Code 3':<10} {'Code 1':<10} {'Name'}")
+    typer.echo("  " + "─" * 38)
+    for code3, code1, name in AA_TABLE:
+        typer.echo(f"  {code3:<10} {code1:<10} {name}")
+    typer.echo("")
+    typer.echo(
+        "  Usage : --aa 'LEU LYS PRO'  or  --aa LEU,LYS,PRO\n"
+        "  Note  : ASN+ASP and GLU+GLN are always deuterated together (linked pairs).\n"
+    )
 
 
 @app.command()
@@ -88,7 +125,10 @@ def run(
     ),
     output_dir: Optional[Path] = typer.Option(
         None, "--output-dir",
-        help="Output directory.",
+        help=(
+            "Output directory for generated PDB files. "
+            "Default: '<pdb_basename>_deuterated_pdbs/' in the current folder."
+        ),
     ),
     batch_script: Optional[Path] = typer.Option(
         None, "--batch-script",
@@ -110,12 +150,27 @@ def run(
         False, "--no-default-ref",
         help="Do not create the default protonated-in-D2O / H2O reference PDBs.",
     ),
+    ref: Optional[List[Path]] = typer.Option(
+        None, "--ref",
+        help=(
+            "Additional reference PDB file(s) to copy into ref/ and use for "
+            "fitness evaluation. Repeat the flag for multiple files: "
+            "--ref ref1.pdb --ref ref2.pdb. "
+            "Can be combined with or without --no-default-ref."
+        ),
+    ),
     verbose: bool = typer.Option(
         False, "--verbose",
         help="Enable verbose logging.",
     ),
 ):
-    """Run the full genetic algorithm on a PDB file."""
+    """Run the full genetic algorithm on a PDB file.
+
+    Outputs are written to the following directories by default:
+      '<pdb_basename>_deuterated_pdbs/'   — generated deuterated PDB files
+      '<pdb_basename>_primus_out/'        — Pepsi-SANS simulation results
+      '<pdb_basename>_final_results/'     — best solution summary
+    """
     argv = ["generate_deuterated_pdbs", str(pdb_file)]
     if population_size is not None:
         argv += ["-p", str(population_size)]
@@ -143,6 +198,8 @@ def run(
         argv += ["--d2o"] + [str(v) for v in d2o_values]
     if no_default_ref:
         argv += ["--no_default_ref"]
+    if ref:
+        argv += ["--ref"] + [str(r) for r in ref]
     if verbose:
         argv += ["--verbose"]
 
@@ -175,9 +232,13 @@ def deuterate(
         0.0, "--d2o",
         help="D2O percentage for labile hydrogen exchange (0-100).",
     ),
-    amino_acids: Optional[List[str]] = typer.Option(
+    amino_acids: Optional[str] = typer.Option(
         None, "-a", "--aa",
-        help="Amino acid types to deuterate (3-letter codes, e.g. --aa ALA --aa GLY).",
+        help=(
+            "Amino acid types to deuterate. Separate multiple codes with spaces or "
+            "commas (e.g. --aa 'LEU LYS PRO' or --aa LEU,LYS,PRO). "
+            "Run 'optisans aa' to see all available codes."
+        ),
     ),
     all_aa: bool = typer.Option(
         False, "--all",
@@ -187,26 +248,40 @@ def deuterate(
         False, "--verbose",
         help="Enable verbose logging.",
     ),
+    config: Optional[Path] = typer.Option(
+        None, "--config",
+        help=(
+            "INI configuration file for deuteration parameters "
+            "(sections [DEUTERATION] and [AMINO_ACIDS]). "
+            "CLI arguments always override values from the config file. "
+            "See pdb_config.ini in the project root for an example."
+        ),
+    ),
 ):
     """Deuterate a single PDB file according to a given specification."""
-    argv = [
-        "pdb_deuteration",
+    import re as _re
+    aa_list: List[str] = []
+    if amino_acids:
+        aa_list = [x.strip().upper() for x in _re.split(r'[,\s]+', amino_acids) if x.strip()]
+    argv = ["pdb_deuteration"]
+    if config is not None:
+        argv += [str(config)]
+    argv += [
         "-i", str(pdb_file),
         "-o", str(output),
         "--d2o", str(d2o),
     ]
     if all_aa:
         argv.append("--all")
-    elif amino_acids:
-        for aa in amino_acids:
-            aa_upper = aa.upper()
-            if aa_upper not in VALID_AA:
+    elif aa_list:
+        for aa in aa_list:
+            if aa not in VALID_AA:
                 typer.echo(f"Error: invalid amino acid code: {aa}", err=True)
                 typer.echo(
                     f"Valid codes: {', '.join(sorted(VALID_AA))}", err=True,
                 )
                 raise typer.Exit(1)
-            argv.append(f"--{aa_upper}")
+            argv.append(f"--{aa}")
     if verbose:
         argv.append("--verbose")
 
@@ -334,14 +409,22 @@ def recycle(
             "is placed in ref/ as the third fitness reference."
         ),
     ),
-    amino_acids: Optional[List[str]] = typer.Option(
+    amino_acids: Optional[str] = typer.Option(
         None, "-a", "--aa",
-        help="Amino acid types to deuterate; repeat the flag for multiple AAs "
-             "(e.g. --aa LEU --aa LYS). Omit to use no AA deuteration.",
+        help=(
+            "Amino acid types to deuterate. Separate multiple codes with spaces or "
+            "commas (e.g. --aa 'LEU LYS PRO' or --aa LEU,LYS,PRO). "
+            "Run 'optisans aa' to see all available codes."
+        ),
     ),
     output_dir: Optional[Path] = typer.Option(
         None, "--output-dir",
-        help="Base output directory (default: {pdb_stem}_recycle/).",
+        help=(
+            "Base output directory. "
+            "Default: '<pdb_stem>_recycle/' in the current folder. "
+            "Contains '<stem>_recycle_deuterated_pdbs/' (PDB files) and "
+            "'<stem>_recycle_primus_out/' (SANS results and plots)."
+        ),
     ),
     step: int = typer.Option(
         1, "--step",
@@ -364,6 +447,14 @@ def recycle(
         150, "--jobs", "-j",
         help="Number of parallel Pepsi-SANS jobs (default 150).",
     ),
+    no_default_ref: bool = typer.Option(
+        False, "--no-default-ref",
+        help=(
+            "Do not generate the default protonated-in-D2O / H2O reference PDBs. "
+            "Use this only if reference .dat files are already present in the "
+            "ref/ subfolder of the SANS output directory."
+        ),
+    ),
 ):
     """
     Contrast variation scan: generate all D2O PDBs (0–100%) with a fixed
@@ -374,11 +465,13 @@ def recycle(
       {stem}_recycle_primus_out/        — Pepsi-SANS .dat files + result.csv + plots
       {stem}_recycle_primus_out/ref/    — 3 reference SANS curves used for fitness
     """
-    if amino_acids is None:
-        amino_acids = []
+    import re as _re
+    aa_list: List[str] = []
+    if amino_acids:
+        aa_list = [x.strip().upper() for x in _re.split(r'[,\s]+', amino_acids) if x.strip()]
 
     # Validate AA codes early, before any expensive operations
-    invalid = [aa for aa in amino_acids if aa.upper() not in VALID_AA]
+    invalid = [aa for aa in aa_list if aa not in VALID_AA]
     if invalid:
         typer.echo(f"Error: invalid amino acid code(s): {', '.join(invalid)}", err=True)
         typer.echo(f"Valid codes: {', '.join(sorted(VALID_AA))}", err=True)
@@ -399,13 +492,14 @@ def recycle(
         recycle_workflow(
             pdb_file=str(pdb_file),
             d2o_ref=d2o,
-            amino_acids=[aa.upper() for aa in amino_acids],
+            amino_acids=aa_list,
             output_dir=str(output_dir) if output_dir is not None else None,
             batch_script=str(batch_script),
             d2o_step=step,
             q_max=q_max,
             ratio_threshold=ratio_threshold,
             n_jobs=n_jobs,
+            no_default_ref=no_default_ref,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         typer.echo(f"Error: {exc}", err=True)

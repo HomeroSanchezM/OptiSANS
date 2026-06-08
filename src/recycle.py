@@ -35,6 +35,7 @@ def recycle_workflow(
     q_max: float = 0.3,
     ratio_threshold: float = 0.01,
     n_jobs: int = 150,
+    no_default_ref: bool = False,
 ) -> None:
     """
     Full contrast-variation scan pipeline.
@@ -99,7 +100,10 @@ def recycle_workflow(
     _generate_main_pdbs(pdb_file, deuteration_vector, pdb_dir, d2o_step)
 
     # ---- 4. Generate reference PDB files -----------------------------------
-    _generate_reference_pdbs(pdb_file, pdb_stem, ref_pdb_dir)
+    if not no_default_ref:
+        _generate_reference_pdbs(pdb_file, pdb_stem, ref_pdb_dir)
+    else:
+        logger.info("Skipping default reference PDB generation (--no-default-ref).")
 
     # ---- 5. Run Pepsi-SANS via parallel_process_pdb.sh --------------------
     _run_pepsi_sans(pdb_dir, batch_script, n_jobs)
