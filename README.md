@@ -33,13 +33,18 @@ that wraps all functionality behind clear subcommands:
 optisans run protein.pdb                              # full GA, default params
 optisans run protein.pdb -p 60 -g 50 --seed 42       # custom params
 optisans run protein.pdb --config config.ini          # via config file
-optisans deuterate protein.pdb -o out.pdb --d2o 50 --aa ALA --aa GLY
-optisans batch protein1.pdb protein2.pdb              # multi-protein
-optisans batch protein1.pdb --config config.ini       # batch via config
-optisans recycle protein.pdb --d2o 42 --aa LEU --aa LYS  # contrast variation scan
-optisans evaluate results_dir/                        # re-evaluate fitness
-optisans plot results_dir/                            # all plots
-optisans plot results_dir/ --annotate --fitness-only  # fitness plot only
+optisans run protein.pdb --ref extra_ref.pdb          # additional reference PDB
+optisans deuterate protein.pdb -o out.pdb --d2o 50 --aa "ALA GLY"
+optisans deuterate protein.pdb -o out.pdb --d2o 50 --aa ALA,GLY
+optisans deuterate protein.pdb -o out.pdb --config pdb_config.ini
+optisans recycle protein.pdb --d2o 42 --aa "LEU LYS"     # contrast variation scan
+optisans recycle protein.pdb --d2o 42 --no-default-ref   # skip default references
+optisans evaluate results_dir/                           # re-evaluate fitness
+optisans plot results_dir/                               # all plots
+optisans plot results_dir/ --annotate --fitness-only     # fitness plot only
+optisans aa                                              # list amino acid codes
+optisans batch protein1.pdb protein2.pdb                 # multi-protein
+optisans batch protein1.pdb --config config.ini          # batch via config
 ```
 
 Run `optisans --help` or `optisans <subcommand> --help` for the full list
@@ -115,11 +120,13 @@ Common options:
 | `-v, --d2o_variation_rate` | Maximum D2O change per mutation (range 0-100) |
 | `-g, --generations` | Number of generations to run |
 | `--seed` | Random seed for reproducibility |
-| `--output_dir` | Output folder (default: `<pdb_basename>_deuterated_pdbs`) |
+| `--output_dir` | Output folder (default: `<pdb_basename>_deuterated_pdbs/`) |
 | `--batch_script` | Path to the parallel batch processing script (default: `./parallel_process_pdb.sh`) |
 | `--q-max` | Maximum q value for fitness evaluation in inverse angstroms (default: 0.3) |
 | `--ratio-threshold` | Minimum Imax/background ratio to accept a curve (default: 0.01) |
 | `--d2o` | Lock D2O to a fixed list of values, e.g. `--d2o 0 42 100` |
+| `--ref` | Additional reference PDB file(s) to copy into `ref/` and use for fitness evaluation. Repeat for multiple files: `--ref ref1.pdb --ref ref2.pdb` |
+| `--no-default-ref` | Do not generate the default protonated-in-D2O / H2O reference PDBs. Use this only if reference `.dat` files are already present in the `ref/` subfolder |
 
 Example:
 
@@ -167,20 +174,43 @@ Deuterate a single PDB file according to a specification, without running the fu
 
 ```bash
 python pdb_deuteration.py [config.ini] [options]
+optisans deuterate input.pdb -o output.pdb [options]
 ```
 
 Examples:
 
 ```bash
-# Command line
+# Command line — single or multiple amino acids
 python pdb_deuteration.py -i input.pdb -o output.pdb --d2o 50 --ALA --GLY
+optisans deuterate input.pdb -o output.pdb --d2o 50 --aa "ALA GLY LEU"
+optisans deuterate input.pdb -o output.pdb --d2o 50 --aa ALA,GLY,LEU
 
 # Using a config file
 python pdb_deuteration.py pdb_config.ini
+optisans deuterate input.pdb -o output.pdb --config pdb_config.ini
+
+# List all available amino acid codes
+optisans aa
 ```
+
+The `--aa` / `-a` option accepts multiple 3-letter codes separated by spaces or commas. Run `optisans aa` to see all 20 standard amino acid codes. Case-insensitive: `--aa leu`, `--aa Leu`, and `--aa LEU` are equivalent.
 
 Flags for each amino acid (`--ALA`, `--GLY`, etc.) activate deuteration of that residue type. Use `--all` to deuterate all amino acids. Use `--no-ALA` etc. to exclude a specific type when combined with `--all`.
 
+
+---
+
+### 3b. Listing amino acid codes: `optisans aa`
+
+The `aa` subcommand displays a formatted table of the 20 standard amino acids
+with their 3-letter code, 1-letter code, and full name:
+
+```bash
+optisans aa
+```
+
+This is the quickest way to look up valid codes for `--aa`. The table also
+reminds that ASN+ASP and GLU+GLN are always deuterated together (linked pairs).
 
 ---
 
@@ -256,6 +286,7 @@ python d2o_vs_d.py <output_dir>
 ## Notes
 
 - The input PDB file must have all hydrogen atoms explicit and fully protonated before running the tool. Use tools such as PDBFixer or GROMACS to add missing hydrogens if needed.
-- The two reference curves (protonated protein in D2O solvent and protonated protein in H2O solvent) are generated automatically by the main script and placed in the `ref/` subfolder.
+- The two reference curves (protonated protein in D2O solvent and protonated protein in H2O solvent) are generated automatically by the main script and placed in the `ref/` subfolder. Use `--no-default-ref` to skip their generation when reference data is already available.
 - Pepsi-SANS must be available at the path `./Pepsi-SANS-Linux/Pepsi-SANS` relative to where the scripts are run.
 - GNU `parallel` must be installed for `parallel_process_pdb.sh` to work. It is included as a pixi dependency.
+- The `--aa` option is case-insensitive: `leu`, `Leu`, and `LEU` are all accepted. Invalid codes are rejected with a clear error message listing all valid codes.
