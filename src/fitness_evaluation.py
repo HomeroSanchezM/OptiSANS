@@ -59,6 +59,11 @@ def parse_arguments():
                              help='Maximum q value for truncation (default: 0.3 Å⁻¹)')
     param_group.add_argument('--ratio-threshold', type=float, default=0.01,
                              help='Minimum Imax/background ratio to accept a curve (default: 0.01)')
+    param_group.add_argument('--gamma', type=float, default=2,
+                             help='Exponent for Imax/background ratio in fitness '
+                                  'formula: fitness = product(areas) * ratio^gamma. '
+                                  'Default: 2 (quadratic). Use 0 to ignore ratio, '
+                                  '1 for linear weighting.')
     param_group.add_argument('--i0-threshold', type=float, default=None,
                              help=argparse.SUPPRESS)
     output_group = parser.add_argument_group('Output control')
@@ -292,10 +297,10 @@ def ratio_check(I, d2o_percent, threshold=0.01):
 #  SCALING AND FITNESS
 # ============================================================================
 
-def scaling_and_compare(q, I, references, q_max, ratio):
+def scaling_and_compare(q, I, references, q_max, ratio, gamma=2):
     """
     Compute fitness as the product of area differences against all references,
-    multiplied by ratio and 10000.
+    multiplied by ratio^gamma.
 
     Args:
         q:          q values of the simulated curve
@@ -303,9 +308,11 @@ def scaling_and_compare(q, I, references, q_max, ratio):
         references: List of (q_ref, I_ref) tuples for each reference curve
         q_max:      Truncation limit
         ratio:      Imax / background ratio for the simulated curve
+        gamma:      Exponent applied to ratio (default: 2).
+                    0 = no ratio weighting, 1 = linear, 2 = quadratic.
 
     Returns:
-        float: product(area_i) * ratio^2 * 10 000
+        float: product(area_i) * ratio^gamma
     """
     q_trunc, I_trunc = truncate_to_q_max(q, I, q_max)
 
@@ -317,10 +324,10 @@ def scaling_and_compare(q, I, references, q_max, ratio):
         area = calculate_area_difference(q_trunc, I_scaled, I_ref_regrid)
         fitness_product *= area
 
-    return fitness_product * (ratio ** 2) *100000000
+    return fitness_product * (ratio ** gamma)
 
 
-def fitness(q, I, references, q_max, file_path, ratio_threshold=0.01):
+def fitness(q, I, references, q_max, file_path, ratio_threshold=0.01, gamma=2):
     """
     Compute raw fitness score for a single curve against all references.
 
@@ -330,6 +337,7 @@ def fitness(q, I, references, q_max, file_path, ratio_threshold=0.01):
         q_max:           q truncation limit
         file_path:       Used to extract D2O percentage for ratio check
         ratio_threshold: Minimum ratio to accept a curve
+        gamma:           Exponent applied to ratio in fitness formula
 
     Returns:
         (float, float): (fitness_score, ratio)
@@ -345,7 +353,7 @@ def fitness(q, I, references, q_max, file_path, ratio_threshold=0.01):
             logger.debug(f"Ratio check failed for '{os.path.basename(file_path)}': ratio={ratio:.4f}")
             return 0.0, ratio
 
-    return scaling_and_compare(q, I, references, q_max, ratio), ratio
+    return scaling_and_compare(q, I, references, q_max, ratio, gamma=gamma), ratio
 
 
 def normalize_fitness(fitness_values):
@@ -384,7 +392,8 @@ def normalize_fitness(fitness_values):
 # ============================================================================
 
 def evaluate_population_fitness(directory, deut_ref=None, prot_ref=None,
-                                q_max=0.3, i0_threshold=None, ratio_threshold=0.01):
+                                q_max=0.3, i0_threshold=None, ratio_threshold=0.01,
+                                gamma=2):
     """
     Evaluate fitness for all .dat files in directory against all references in ref/.
 
@@ -395,6 +404,7 @@ def evaluate_population_fitness(directory, deut_ref=None, prot_ref=None,
         q_max:           q truncation limit
         i0_threshold:    Deprecated, ignored
         ratio_threshold: Minimum Imax/background ratio
+        gamma:           Exponent applied to ratio in fitness formula (default: 2)
 
     Returns:
         (raw_fitness_scores, file_paths, ratios)
@@ -420,7 +430,7 @@ def evaluate_population_fitness(directory, deut_ref=None, prot_ref=None,
     for file_path in sim_files:
         try:
             q, I = parse_sans_file(file_path)
-            score, ratio = fitness(q, I, references, q_max, file_path, ratio_threshold)
+            score, ratio = fitness(q, I, references, q_max, file_path, ratio_threshold, gamma=gamma)
             raw_scores.append(score)
             valid_files.append(file_path)
             ratios.append(ratio)
@@ -441,6 +451,7 @@ def main():
             directory=args.directory,
             q_max=args.q_max,
             ratio_threshold=args.ratio_threshold,
+            gamma=args.gamma,
         )
     except (NotADirectoryError, FileNotFoundError, ValueError) as e:
         logger.error(f"Evaluation failed: {e}")
@@ -455,15 +466,15 @@ def main():
         print(f"Ratio threshold: {args.ratio_threshold}")
         print(f"Files evaluated: {len(fitness_scores)}")
         print(f"Files passing ratio check: {np.sum(fitness_scores > 0)}/{len(fitness_scores)}")
-        print(f"Best fitness: {np.max(fitness_scores):.8f}")
+        print(f"Best fitness: {np.max(fitness_scores):.4e}")
         if len(fitness_scores) > 0 and np.max(fitness_scores) > 0:
             best_idx = np.argmax(fitness_scores)
             print(f"Best file: {os.path.basename(sim_files[best_idx])}")
-        print(f"Average fitness: {np.mean(fitness_scores):.8f}")
+        print(f"Average fitness: {np.mean(fitness_scores):.4e}")
         print("=" * 60 + "\n")
 
     for score in fitness_scores:
-        print(f"{score:.8f}")
+        print(f"{score:.4e}")
 
     if args.csv:
         csv_path = args.csv
@@ -472,7 +483,7 @@ def main():
                 writer = csv.writer(csvfile)
                 writer.writerow(['filename', 'fitness_score', 'ratio'])
                 for file_path, score, ratio in zip(sim_files, fitness_scores, ratios):
-                    writer.writerow([os.path.basename(file_path), f"{score:.8f}", f"{ratio:.8f}"])
+                    writer.writerow([os.path.basename(file_path), f"{score:.4e}", f"{ratio:.4e}"])
             if not args.quiet:
                 logger.info(f"Results saved to '{csv_path}' ({len(fitness_scores)} rows)")
         except OSError as e:

@@ -561,11 +561,11 @@ class Chromosome:
             result.append(f"{aa.code_3}{tag}")
         prov = f"[gen{self.generation:02d}_Chr{self.index:03d}]"
         return (prov + " " + " | ".join(result) +
-                f" | D2O={self.d2o}% | Fitness={self.fitness:.4f}")
+                f" | D2O={self.d2o}% | Fitness={self.fitness:.4e}")
 
     def __repr__(self) -> str:
         return (f"Chromosome(gen={self.generation}, idx={self.index}, "
-                f"d2o={self.d2o}, fitness={self.fitness:.4f})")
+                f"d2o={self.d2o}, fitness={self.fitness:.4e})")
 
     def __hash__(self) -> int:
         """Hash based on deuteration vector + D2O (not fitness/generation/index)."""
@@ -742,14 +742,21 @@ class PopulationGenerator:
         return chromosome not in population
 
     def _calcule_selection_probabilities(self, population: List[Chromosome]) -> List[float]:
-        """Softmax-based selection probabilities to avoid 0% / 100% extremes."""
+        """Softmax-based selection probabilities with adaptive scaling.
+
+        Normalizes fitness relative to the range within the population,
+        then applies softmax with temperature = 0.5 * range.
+        This gives a ~7x pressure ratio (best/worst), balancing exploration
+        and exploitation for fitness values spanning several orders of magnitude.
+        """
         fitness_array = np.array([c.fitness for c in population])
-        fitness_array = fitness_array - fitness_array.min() + 1e-10
-        temperature   = 0.5
-        exp_fitness   = np.exp(fitness_array / temperature)
-        probas        = exp_fitness / exp_fitness.sum()
+        fitness_array = fitness_array - fitness_array.min() + 1e-30
+        scale = np.max(fitness_array)
+        temperature = scale * 0.5
+        exp_fitness = np.exp(fitness_array / temperature)
+        probas = exp_fitness / exp_fitness.sum()
         epsilon = 1e-6
-        probas  = np.clip(probas, epsilon, 1.0 - epsilon)
+        probas = np.clip(probas, epsilon, 1.0 - epsilon)
         probas /= probas.sum()
         return probas.tolist()
 

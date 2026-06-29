@@ -142,6 +142,14 @@ def run(
         None, "--ratio-threshold",
         help="Minimum Imax/background ratio to accept a curve.",
     ),
+    gamma: Optional[float] = typer.Option(
+        None, "--gamma",
+        help=(
+            "Exponent for Imax/background ratio in fitness formula: "
+            "fitness = product(areas) * ratio^gamma. "
+            "Default: 2 (quadratic). 0 = ignore ratio, 1 = linear."
+        ),
+    ),
     d2o_values: Optional[List[int]] = typer.Option(
         None, "--d2o",
         help="Lock D2O to fixed values (repeat flag, e.g. --d2o 0 --d2o 42 --d2o 100).",
@@ -194,6 +202,8 @@ def run(
         argv += ["--q-max", str(q_max)]
     if ratio_threshold is not None:
         argv += ["--ratio-threshold", str(ratio_threshold)]
+    if gamma is not None:
+        argv += ["--gamma", str(gamma)]
     if d2o_values:
         argv += ["--d2o"] + [str(v) for v in d2o_values]
     if no_default_ref:
@@ -359,6 +369,14 @@ def evaluate(
         0.01, "--ratio-threshold",
         help="Minimum Imax/background ratio to accept a curve.",
     ),
+    gamma: float = typer.Option(
+        2, "--gamma",
+        help=(
+            "Exponent for Imax/background ratio in fitness formula: "
+            "fitness = product(areas) * ratio^gamma. "
+            "Default: 2 (quadratic). 0 = ignore ratio, 1 = linear."
+        ),
+    ),
     csv_output: Optional[Path] = typer.Option(
         None, "--csv",
         help="CSV output file for fitness scores.",
@@ -374,6 +392,7 @@ def evaluate(
         str(directory),
         "--q-max", str(q_max),
         "--ratio-threshold", str(ratio_threshold),
+        "--gamma", str(gamma),
     ]
     if csv_output is not None:
         argv += ["--csv", str(csv_output)]
@@ -443,6 +462,14 @@ def recycle(
         0.01, "--ratio-threshold",
         help="Minimum Imax/background ratio to accept a curve (default 0.01).",
     ),
+    gamma: float = typer.Option(
+        2, "--gamma",
+        help=(
+            "Exponent for Imax/background ratio in fitness formula: "
+            "fitness = product(areas) * ratio^gamma. "
+            "Default: 2 (quadratic). 0 = ignore ratio, 1 = linear."
+        ),
+    ),
     n_jobs: int = typer.Option(
         150, "--jobs", "-j",
         help="Number of parallel Pepsi-SANS jobs (default 150).",
@@ -500,6 +527,7 @@ def recycle(
             ratio_threshold=ratio_threshold,
             n_jobs=n_jobs,
             no_default_ref=no_default_ref,
+            gamma=gamma,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         typer.echo(f"Error: {exc}", err=True)

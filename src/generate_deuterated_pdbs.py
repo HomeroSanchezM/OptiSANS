@@ -185,6 +185,10 @@ def parse_arguments():
     fit = parser.add_argument_group('Fitness evaluation parameters')
     fit.add_argument('--q-max', type=float)
     fit.add_argument('--ratio-threshold', type=float)
+    fit.add_argument('--gamma', type=float, default=2,
+                     help='Exponent for Imax/background ratio in fitness formula: '
+                          'fitness = product(areas) * ratio^gamma. '
+                          'Default: 2 (quadratic). 0 = ignore ratio, 1 = linear.')
     fit.add_argument('--i0-threshold', type=float, help=argparse.SUPPRESS)
     fit.add_argument('--deut-ref', type=str, help=argparse.SUPPRESS)  # deprecated
     fit.add_argument('--prot-ref', type=str, help=argparse.SUPPRESS)  # deprecated
@@ -278,6 +282,7 @@ def merge_config(cli_args: argparse.Namespace,
         "patience":           pick(cli_args.patience,     ini_cfg.get("patience"),     50),
         "q_max":              pick(cli_args.q_max,            ini_cfg.get("q_max"),            0.3),
         "ratio_threshold":    pick(cli_args.ratio_threshold,  ini_cfg.get("ratio_threshold"),  0.01),
+        "gamma":              pick(cli_args.gamma,            ini_cfg.get("gamma"),            2),
         "restrictions":       ini_cfg.get("restrictions", [True] * N_EFFECTIVE_AA),
         "d2o":                pick(getattr(cli_args, 'd2o', None), ini_cfg.get("d2o"), None),
         # Reference options
@@ -324,6 +329,8 @@ def validate_config(cfg: Dict[str, Any]) -> None:
         raise ValueError("q_max must be positive")
     if not (0.0 <= cfg["ratio_threshold"] <= 1.0):
         raise ValueError("ratio_threshold must be in [0.0, 1.0]")
+    if cfg["gamma"] < 0:
+        raise ValueError("gamma must be >= 0")
     if cfg["seed"] is not None and cfg["seed"] < 0:
         raise ValueError("seed must be non-negative")
     # Validate fixed d2o list if provided
@@ -610,7 +617,8 @@ def evaluate_fitness(primus_dir: str,
                      q_max: float,
                      ratio_threshold: float,
                      deut_ref: Optional[str] = None,
-                     prot_ref: Optional[str] = None) -> None:
+                     prot_ref: Optional[str] = None,
+                     gamma: float = 2) -> None:
     """Evaluate fitness for all chromosomes by matching .dat filenames."""
     logger.info("=" * 70)
     logger.info(">>> Evaluating fitness from SANS data…")
@@ -625,6 +633,7 @@ def evaluate_fitness(primus_dir: str,
             directory=primus_dir,
             q_max=q_max,
             ratio_threshold=ratio_threshold,
+            gamma=gamma,
         )
     except Exception as exc:
         logger.error(f"Fitness evaluation failed: {exc}")
@@ -711,7 +720,7 @@ def display_population_summary(population: List[Chromosome],
         chrom = population[sorted_indices[rank]]
         logger.info(
             f"  {rank + 1:2d}. {get_pdb_filename(chrom)}"
-            f"  fitness={chrom.fitness:.6f}"
+            f"  fitness={chrom.fitness:.4e}"
             f"  H={chrom.H}  D={chrom.D}"
             f"  %D={(chrom.D/(chrom.H + chrom.D))*100:.2f}"
             f"  ratio={chrom.ratio:.3f}"
@@ -739,9 +748,9 @@ def save_population_summary(population: List[Chromosome],
         fh.write("=" * 170 + "\n\n")
         fh.write(f"Population size : {len(population)}\n")
         if fitness_values:
-            fh.write(f"Best fitness    : {max(fitness_values):.6f}\n")
-            fh.write(f"Average fitness : {float(np.mean(fitness_values)):.6f}\n")
-            fh.write(f"Worst fitness   : {min(fitness_values):.6f}\n")
+            fh.write(f"Best fitness    : {max(fitness_values):.4e}\n")
+            fh.write(f"Average fitness : {float(np.mean(fitness_values)):.4e}\n")
+            fh.write(f"Worst fitness   : {min(fitness_values):.4e}\n")
         fh.write("\n")
         fh.write(
             f"{'Rank':<6} {'PDB filename (creation name)':<55} "
@@ -758,7 +767,7 @@ def save_population_summary(population: List[Chromosome],
             pat_str = "".join("1" if d else "0" for d in reversed(chrom.deuteration))
             fh.write(
                 f"{rank:<6} {filename:<55} {chrom.d2o:<6} "
-                f"{pat_str:<20} {sum(chrom.deuteration):<5} {chrom.ratio:<14.3f} {chrom.fitness:<14.6f} "
+                f"{pat_str:<20} {sum(chrom.deuteration):<5} {chrom.ratio:<14.3f} {chrom.fitness:<14.4e} "
                 f"{(chrom.D/(chrom.H + chrom.D))*100:<14.2f} "
                 f"{(chrom.non_labile_D / (chrom.H + chrom.D))*100:<14.2f}"
                 f"gen{chrom.generation:02d}_idx{chrom.index:03d}\n"
@@ -790,14 +799,14 @@ def save_best_fitness_summary(best_chrom: Chromosome,
                 "deuterated_aa_list,pdb_filename,created_generation,created_index\n"
             )
         fh.write(
-            f"{generation},{best_chrom.fitness:.8f},{best_chrom.d2o},"
+            f"{generation},{best_chrom.fitness:.6e},{best_chrom.d2o},"
             f"{sum(best_chrom.deuteration)},{best_chrom.ratio:.3f},"
             f"{d_str:.2f},{non_labile_d_str:.2f},"
             f"{deut_str},{filename},{best_chrom.generation},{best_chrom.index}\n"
         )
     logger.info(
         f"  Best fitness CSV: gen={generation}, "
-        f"fitness={best_chrom.fitness:.6f}, D2O={best_chrom.d2o}%"
+        f"fitness={best_chrom.fitness:.4e}, D2O={best_chrom.d2o}%"
     )
 
 
@@ -808,16 +817,16 @@ def save_best_fitness_summary(best_chrom: Chromosome,
 def check_fitness_non_decreasing(population, sorted_indices, previous_best, generation):
     current_best = population[sorted_indices[0]].fitness
     if previous_best is None:
-        logger.info(f"  Best fitness (gen {generation}): {current_best:.6f}")
-    elif current_best < previous_best - 1e-10:
+        logger.info(f"  Best fitness (gen {generation}): {current_best:.4e}")
+    elif current_best < previous_best - 1e-20:
         logger.warning(
             f"  ELITISM VIOLATION at generation {generation}: "
-            f"best fitness decreased from {previous_best:.6f} to {current_best:.6f}."
+            f"best fitness decreased from {previous_best:.4e} to {current_best:.4e}."
         )
     else:
         logger.info(
-            f"  Best fitness (gen {generation}): {current_best:.6f} "
-            f"(Δ={current_best - previous_best:+.6f})"
+            f"  Best fitness (gen {generation}): {current_best:.4e} "
+            f"(Δ={current_best - previous_best:+.4e})"
         )
     return current_best
 
@@ -845,7 +854,7 @@ class EarlyStoppingTracker:
     Setting ``patience=0`` disables early stopping entirely.
     """
 
-    def __init__(self, patience: int = 50, min_delta: float = 1e-10):
+    def __init__(self, patience: int = 50, min_delta: float = 1e-20):
         """
         Args:
             patience:  Number of consecutive generations without improvement
@@ -874,7 +883,7 @@ class EarlyStoppingTracker:
             self.best       = current_fitness
             self.no_improve = 0
             logger.debug(
-                f"  [EarlyStopping] New best: {self.best:.8f}  "
+                f"  [EarlyStopping] New best: {self.best:.4e}  "
                 f"(counter reset to 0)"
             )
         else:
@@ -882,7 +891,7 @@ class EarlyStoppingTracker:
             logger.info(
                 f"  [EarlyStopping] No improvement for {self.no_improve} "
                 f"generation(s)  (patience={self.patience}, "
-                f"best={self.best:.8f}, current={current_fitness:.8f})"
+                f"best={self.best:.4e}, current={current_fitness:.4e})"
             )
 
         if self.no_improve >= self.patience:
@@ -900,7 +909,7 @@ class EarlyStoppingTracker:
         return (
             f"Early stopping: patience={self.patience}  "
             f"no-improve streak={self.no_improve}  "
-            f"best={self.best:.8f}"
+            f"best={self.best:.4e}"
         )
 
 
@@ -1058,6 +1067,7 @@ def main():
     logger.info(f"Early stopping       : {patience_info}")
     logger.info(f"Q max (fitness)      : {cfg['q_max']} Å⁻¹")
     logger.info(f"Ratio threshold      : {cfg['ratio_threshold']}")
+    logger.info(f"Gamma (ratio exp.)   : {cfg['gamma']}")
     logger.info(f"Effective gene count : {N_EFFECTIVE_AA}  "
                 f"(ASN+ASP linked, GLU+GLN linked)")
     logger.info(f"Default references   : "
@@ -1105,7 +1115,7 @@ def main():
     population = generator.generate_initial_population(generation=0)
     generate_pdbs_for_chromosomes(str(pdb_path), population, output_dir)
     primus_dir = run_batch_processing(output_dir, cfg['batch_script'])
-    evaluate_fitness(primus_dir, population, cfg['q_max'], cfg['ratio_threshold'])
+    evaluate_fitness(primus_dir, population, cfg['q_max'], cfg['ratio_threshold'], gamma=cfg['gamma'])
 
     sorted_indices = get_sorted_indices(population)
     previous_best_fitness = check_fitness_non_decreasing(population, sorted_indices, None, 0)
@@ -1140,7 +1150,7 @@ def main():
         primus_dir    = run_batch_processing(output_dir, cfg['batch_script'],
                                              new_pdb_files=new_pdb_files)
 
-        evaluate_fitness(primus_dir, new_population, cfg['q_max'], cfg['ratio_threshold'])
+        evaluate_fitness(primus_dir, new_population, cfg['q_max'], cfg['ratio_threshold'], gamma=cfg['gamma'])
 
         sorted_indices        = get_sorted_indices(new_population)
         previous_best_fitness = check_fitness_non_decreasing(
@@ -1163,7 +1173,7 @@ def main():
                 f"{es_tracker.patience} generation(s)."
             )
             logger.info(
-                f"    Best fitness achieved: {es_tracker.best:.8f}"
+                f"    Best fitness achieved: {es_tracker.best:.4e}"
             )
             logger.info("=" * 70)
             early_stopped = True
@@ -1189,7 +1199,7 @@ def main():
     logger.info(f"  Deut. genes : {deut_genes}/18 effective genes  "
                 f"→ {deut_aa_count}/20 canonical AAs deuterated")
     logger.info(f"  %D      : {(best.D / (best.H + best.D))*100:.2f}%")
-    logger.info(f"  Fitness : {best.fitness:.6f}")
+    logger.info(f"  Fitness : {best.fitness:.4e}")
 
     create_final_result_folder(
         best_chrom=best,

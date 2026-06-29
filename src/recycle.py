@@ -36,6 +36,7 @@ def recycle_workflow(
     ratio_threshold: float = 0.01,
     n_jobs: int = 150,
     no_default_ref: bool = False,
+    gamma: float = 2,
 ) -> None:
     """
     Full contrast-variation scan pipeline.
@@ -343,6 +344,7 @@ def _run_fitness_evaluation(
         directory=str(sans_dir),
         q_max=q_max,
         ratio_threshold=ratio_threshold,
+        gamma=gamma,
     )
 
     # Summary
@@ -350,7 +352,7 @@ def _run_fitness_evaluation(
     logger.info(
         f"  Evaluated {len(fitness_scores)} curves — "
         f"{n_pass} passed ratio check — "
-        f"best fitness: {float(np.max(fitness_scores)):.6f}"
+        f"best fitness: {float(np.max(fitness_scores)):.4e}"
     )
 
     # Write result.csv  (format expected by plot_contrast_fitness.py)
@@ -361,8 +363,8 @@ def _run_fitness_evaluation(
         for file_path, score, ratio in zip(dat_files, fitness_scores, ratios):
             writer.writerow([
                 Path(file_path).name,
-                f"{score:.8f}",
-                f"{ratio:.8f}",
+                f"{score:.4e}",
+                f"{ratio:.4e}",
             ])
 
     logger.info(f"  Fitness CSV     : {csv_path}")

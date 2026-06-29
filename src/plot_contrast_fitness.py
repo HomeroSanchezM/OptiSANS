@@ -145,7 +145,7 @@ def plot(d2o_vals, fitness_vals, ratio_vals, args):
         for i, (x, y, r) in enumerate(zip(d2o_vals, fitness_vals, ratio_vals)):
             if i % args.label_step != 0:
                 continue
-            label = f"f={y:.4f}\nr={r:.4f}"
+            label = f"f={y:.3e}\nr={r:.3e}"
             txt = ax.annotate(
                 label,
                 xy=(x, y),
