@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """OptiSANS — Unified CLI for protein deuteration optimization for SANS."""
 
-import sys
 import subprocess
+import sys
 from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
+
+import typer
 
 # Ensure sibling modules in src/ are importable when running as an entry point.
 _src_dir = str(Path(__file__).resolve().parent)
 if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
 
-import typer
 
 app = typer.Typer(
     name="optisans",
@@ -21,16 +22,16 @@ app = typer.Typer(
 )
 
 BANNER = r"""
-                                                                          
- ________  ________  _________  ___  ________  ________  ________   ________      
-|\   __  \|\   __  \|\___   ___\\  \|\   ____\|\   __  \|\   ___  \|\   ____\     
-\ \  \|\  \ \  \|\  \|___ \  \_\ \  \ \  \___|\ \  \|\  \ \  \\ \  \ \  \___|_    
- \ \  \\\  \ \   ____\   \ \  \ \ \  \ \_____  \ \   __  \ \  \\ \  \ \_____  \   
-  \ \  \\\  \ \  \___|    \ \  \ \ \  \|____|\  \ \  \ \  \ \  \\ \  \|____|\  \  
-   \ \_______\ \__\        \ \__\ \ \__\____\_\  \ \__\ \__\ \__\\ \__\____\_\  \ 
+
+ ________  ________  _________  ___  ________  ________  ________   ________
+|\   __  \|\   __  \|\___   ___\\  \|\   ____\|\   __  \|\   ___  \|\   ____\
+\ \  \|\  \ \  \|\  \|___ \  \_\ \  \ \  \___|\ \  \|\  \ \  \\ \  \ \  \___|_
+ \ \  \\\  \ \   ____\   \ \  \ \ \  \ \_____  \ \   __  \ \  \\ \  \ \_____  \
+  \ \  \\\  \ \  \___|    \ \  \ \ \  \|____|\  \ \  \ \  \ \  \\ \  \|____|\  \
+   \ \_______\ \__\        \ \__\ \ \__\____\_\  \ \__\ \__\ \__\\ \__\____\_\  \
     \|_______|\|__|         \|__|  \|__|\_________\|__|\|__|\|__| \|__|\_________\
                                        \|_________|                   \|_________|
- 
+
 """
 
 
@@ -41,9 +42,28 @@ def _banner(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
         typer.echo(ctx.get_help())
 
+
 VALID_AA = {
-    "ALA", "ARG", "ASN", "ASP", "CYS", "GLU", "GLN", "GLY", "HIS",
-    "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+    "ALA",
+    "ARG",
+    "ASN",
+    "ASP",
+    "CYS",
+    "GLU",
+    "GLN",
+    "GLY",
+    "HIS",
+    "ILE",
+    "LEU",
+    "LYS",
+    "MET",
+    "PHE",
+    "PRO",
+    "SER",
+    "THR",
+    "TRP",
+    "TYR",
+    "VAL",
 }
 
 
@@ -92,58 +112,73 @@ def run(
         help="Source PDB file (all hydrogens must be explicit and protonated).",
     ),
     population_size: Optional[int] = typer.Option(
-        None, "-p", "--population-size",
+        None,
+        "-p",
+        "--population-size",
         help="Population size (must be a multiple of 3).",
     ),
     generations: Optional[int] = typer.Option(
-        None, "-g", "--generations",
+        None,
+        "-g",
+        "--generations",
         help="Maximum number of generations to run.",
     ),
     elitism: Optional[int] = typer.Option(
-        None, "-e", "--elitism",
+        None,
+        "-e",
+        "--elitism",
         help="Number of elite individuals preserved (must be <= population_size / 3).",
     ),
     d2o_var: Optional[int] = typer.Option(
-        None, "--d2o-var",
+        None,
+        "--d2o-var",
         help="Maximum D2O variation per mutation (0-100).",
     ),
     seed: Optional[int] = typer.Option(
-        None, "--seed",
+        None,
+        "--seed",
         help="Random seed for reproducibility.",
     ),
     patience: Optional[int] = typer.Option(
-        None, "--patience",
+        None,
+        "--patience",
         help=(
             "Early stopping: number of consecutive generations without fitness "
             "improvement before stopping. Default: 50. Set to 0 to disable."
         ),
     ),
     config: Optional[Path] = typer.Option(
-        None, "--config",
+        None,
+        "--config",
         exists=True,
         help="config.ini file (CLI arguments override INI values).",
     ),
     output_dir: Optional[Path] = typer.Option(
-        None, "--output-dir",
+        None,
+        "--output-dir",
         help=(
             "Output directory for generated PDB files. "
             "Default: '<pdb_basename>_deuterated_pdbs/' in the current folder."
         ),
     ),
     batch_script: Optional[Path] = typer.Option(
-        None, "--batch-script",
+        None,
+        "--batch-script",
         help="Path to parallel_process_pdb.sh.",
     ),
     q_max: Optional[float] = typer.Option(
-        None, "--q-max",
+        None,
+        "--q-max",
         help="Maximum q value for fitness evaluation (A^-1).",
     ),
     ratio_threshold: Optional[float] = typer.Option(
-        None, "--ratio-threshold",
+        None,
+        "--ratio-threshold",
         help="Minimum Imax/background ratio to accept a curve.",
     ),
     gamma: Optional[float] = typer.Option(
-        None, "--gamma",
+        None,
+        "--gamma",
         help=(
             "Exponent for Imax/background ratio in fitness formula: "
             "fitness = product(areas) * ratio^gamma. "
@@ -151,15 +186,18 @@ def run(
         ),
     ),
     d2o_values: Optional[List[int]] = typer.Option(
-        None, "--d2o",
+        None,
+        "--d2o",
         help="Lock D2O to fixed values (repeat flag, e.g. --d2o 0 --d2o 42 --d2o 100).",
     ),
     no_default_ref: bool = typer.Option(
-        False, "--no-default-ref",
+        False,
+        "--no-default-ref",
         help="Do not create the default protonated-in-D2O / H2O reference PDBs.",
     ),
     ref: Optional[List[Path]] = typer.Option(
-        None, "--ref",
+        None,
+        "--ref",
         help=(
             "Additional reference PDB file(s) to copy into ref/ and use for "
             "fitness evaluation. Repeat the flag for multiple files: "
@@ -168,7 +206,8 @@ def run(
         ),
     ),
     verbose: bool = typer.Option(
-        False, "--verbose",
+        False,
+        "--verbose",
         help="Enable verbose logging.",
     ),
 ):
@@ -235,15 +274,20 @@ def deuterate(
         help="Input PDB file.",
     ),
     output: Path = typer.Option(
-        ..., "-o", "--output",
+        ...,
+        "-o",
+        "--output",
         help="Output PDB file.",
     ),
     d2o: float = typer.Option(
-        0.0, "--d2o",
+        0.0,
+        "--d2o",
         help="D2O percentage for labile hydrogen exchange (0-100).",
     ),
     amino_acids: Optional[str] = typer.Option(
-        None, "-a", "--aa",
+        None,
+        "-a",
+        "--aa",
         help=(
             "Amino acid types to deuterate. Separate multiple codes with spaces or "
             "commas (e.g. --aa 'LEU LYS PRO' or --aa LEU,LYS,PRO). "
@@ -251,15 +295,18 @@ def deuterate(
         ),
     ),
     all_aa: bool = typer.Option(
-        False, "--all",
+        False,
+        "--all",
         help="Deuterate all amino acid types.",
     ),
     verbose: bool = typer.Option(
-        False, "--verbose",
+        False,
+        "--verbose",
         help="Enable verbose logging.",
     ),
     config: Optional[Path] = typer.Option(
-        None, "--config",
+        None,
+        "--config",
         help=(
             "INI configuration file for deuteration parameters "
             "(sections [DEUTERATION] and [AMINO_ACIDS]). "
@@ -270,16 +317,22 @@ def deuterate(
 ):
     """Deuterate a single PDB file according to a given specification."""
     import re as _re
+
     aa_list: List[str] = []
     if amino_acids:
-        aa_list = [x.strip().upper() for x in _re.split(r'[,\s]+', amino_acids) if x.strip()]
+        aa_list = [
+            x.strip().upper() for x in _re.split(r"[,\s]+", amino_acids) if x.strip()
+        ]
     argv = ["pdb_deuteration"]
     if config is not None:
         argv += [str(config)]
     argv += [
-        "-i", str(pdb_file),
-        "-o", str(output),
-        "--d2o", str(d2o),
+        "-i",
+        str(pdb_file),
+        "-o",
+        str(output),
+        "--d2o",
+        str(d2o),
     ]
     if all_aa:
         argv.append("--all")
@@ -288,7 +341,8 @@ def deuterate(
             if aa not in VALID_AA:
                 typer.echo(f"Error: invalid amino acid code: {aa}", err=True)
                 typer.echo(
-                    f"Valid codes: {', '.join(sorted(VALID_AA))}", err=True,
+                    f"Valid codes: {', '.join(sorted(VALID_AA))}",
+                    err=True,
                 )
                 raise typer.Exit(1)
             argv.append(f"--{aa}")
@@ -317,7 +371,8 @@ def batch(
         help="PDB files to process (one or more).",
     ),
     config: Optional[Path] = typer.Option(
-        None, "--config",
+        None,
+        "--config",
         exists=True,
         help="config.ini file for GA parameters.",
     ),
@@ -362,15 +417,18 @@ def evaluate(
         help="Directory containing .dat files and a ref/ subfolder.",
     ),
     q_max: float = typer.Option(
-        0.3, "--q-max",
+        0.3,
+        "--q-max",
         help="Maximum q value for truncation (A^-1).",
     ),
     ratio_threshold: float = typer.Option(
-        0.01, "--ratio-threshold",
+        0.01,
+        "--ratio-threshold",
         help="Minimum Imax/background ratio to accept a curve.",
     ),
     gamma: float = typer.Option(
-        2, "--gamma",
+        2,
+        "--gamma",
         help=(
             "Exponent for Imax/background ratio in fitness formula: "
             "fitness = product(areas) * ratio^gamma. "
@@ -378,11 +436,13 @@ def evaluate(
         ),
     ),
     csv_output: Optional[Path] = typer.Option(
-        None, "--csv",
+        None,
+        "--csv",
         help="CSV output file for fitness scores.",
     ),
     verbose: bool = typer.Option(
-        False, "--verbose",
+        False,
+        "--verbose",
         help="Enable verbose logging.",
     ),
 ):
@@ -390,9 +450,12 @@ def evaluate(
     argv = [
         "fitness_evaluation",
         str(directory),
-        "--q-max", str(q_max),
-        "--ratio-threshold", str(ratio_threshold),
-        "--gamma", str(gamma),
+        "--q-max",
+        str(q_max),
+        "--ratio-threshold",
+        str(ratio_threshold),
+        "--gamma",
+        str(gamma),
     ]
     if csv_output is not None:
         argv += ["--csv", str(csv_output)]
@@ -421,7 +484,8 @@ def recycle(
         help="Fully protonated input PDB file.",
     ),
     d2o: int = typer.Option(
-        ..., "--d2o",
+        ...,
+        "--d2o",
         help=(
             "D2O percentage (0–100) for the pattern reference curve. "
             "The SANS curve at this exact D2O value (with the requested AA pattern) "
@@ -429,7 +493,9 @@ def recycle(
         ),
     ),
     amino_acids: Optional[str] = typer.Option(
-        None, "-a", "--aa",
+        None,
+        "-a",
+        "--aa",
         help=(
             "Amino acid types to deuterate. Separate multiple codes with spaces or "
             "commas (e.g. --aa 'LEU LYS PRO' or --aa LEU,LYS,PRO). "
@@ -437,7 +503,8 @@ def recycle(
         ),
     ),
     output_dir: Optional[Path] = typer.Option(
-        None, "--output-dir",
+        None,
+        "--output-dir",
         help=(
             "Base output directory. "
             "Default: '<pdb_stem>_recycle/' in the current folder. "
@@ -446,7 +513,8 @@ def recycle(
         ),
     ),
     step: int = typer.Option(
-        1, "--step",
+        1,
+        "--step",
         help="Step between D2O values in the scan (1 = every percent point, default).",
     ),
     batch_script: Path = typer.Option(
@@ -455,15 +523,18 @@ def recycle(
         help="Path to parallel_process_pdb.sh.",
     ),
     q_max: float = typer.Option(
-        0.3, "--q-max",
+        0.3,
+        "--q-max",
         help="Maximum q value for fitness evaluation (Å⁻¹, default 0.3).",
     ),
     ratio_threshold: float = typer.Option(
-        0.01, "--ratio-threshold",
+        0.01,
+        "--ratio-threshold",
         help="Minimum Imax/background ratio to accept a curve (default 0.01).",
     ),
     gamma: float = typer.Option(
-        2, "--gamma",
+        2,
+        "--gamma",
         help=(
             "Exponent for Imax/background ratio in fitness formula: "
             "fitness = product(areas) * ratio^gamma. "
@@ -471,11 +542,14 @@ def recycle(
         ),
     ),
     n_jobs: int = typer.Option(
-        150, "--jobs", "-j",
+        150,
+        "--jobs",
+        "-j",
         help="Number of parallel Pepsi-SANS jobs (default 150).",
     ),
     no_default_ref: bool = typer.Option(
-        False, "--no-default-ref",
+        False,
+        "--no-default-ref",
         help=(
             "Do not generate the default protonated-in-D2O / H2O reference PDBs. "
             "Use this only if reference .dat files are already present in the "
@@ -493,9 +567,12 @@ def recycle(
       {stem}_recycle_primus_out/ref/    — 3 reference SANS curves used for fitness
     """
     import re as _re
+
     aa_list: List[str] = []
     if amino_acids:
-        aa_list = [x.strip().upper() for x in _re.split(r'[,\s]+', amino_acids) if x.strip()]
+        aa_list = [
+            x.strip().upper() for x in _re.split(r"[,\s]+", amino_acids) if x.strip()
+        ]
 
     # Validate AA codes early, before any expensive operations
     invalid = [aa for aa in aa_list if aa not in VALID_AA]
@@ -544,28 +621,35 @@ def plot(
         "generation_XX_summary.txt files).",
     ),
     output: Optional[Path] = typer.Option(
-        None, "-o", "--output",
+        None,
+        "-o",
+        "--output",
         help="Output path for the fitness plot "
         "(default: Fitness_evolution.png inside the directory).",
     ),
     annotate: bool = typer.Option(
-        False, "--annotate",
+        False,
+        "--annotate",
         help="Add a colour grid of deuterated AAs below the fitness plot.",
     ),
     show_min: bool = typer.Option(
-        False, "--min",
+        False,
+        "--min",
         help="With --annotate: show stat values only on change and at last column.",
     ),
     fitness_only: bool = typer.Option(
-        False, "--fitness-only",
+        False,
+        "--fitness-only",
         help="Generate only the fitness evolution plot (skip D2O scatter plots).",
     ),
     scatter_only: bool = typer.Option(
-        False, "--scatter-only",
+        False,
+        "--scatter-only",
         help="Generate only the D2O vs %D scatter plots (skip fitness plot).",
     ),
     interactive: bool = typer.Option(
-        False, "--interactive",
+        False,
+        "--interactive",
         help="Display the fitness plot interactively (matplotlib show).",
     ),
 ):
@@ -598,6 +682,7 @@ def plot(
             sys.argv = argv
             try:
                 from plot_fitness_evolution import main as plot_main
+
                 plot_main()
             except ImportError as exc:
                 typer.echo(f"Import error: {exc}", err=True)
@@ -613,6 +698,7 @@ def plot(
         sys.argv = ["d2o_vs_d", str(directory)]
         try:
             from d2o_vs_d import main as scatter_main
+
             scatter_main()
         except ImportError as exc:
             typer.echo(f"Import error: {exc}", err=True)

@@ -10,31 +10,30 @@ Fitness = product(area_i for each reference) * ratio * 10 000
 
 """
 
-import csv
-import numpy as np
 import argparse
-import os
-import re
+import csv
 import glob
 import logging
+import os
+import re
+
+import numpy as np
+from scipy.integrate import simpson
 from scipy.interpolate import griddata
 from scipy.optimize import curve_fit
-from scipy.integrate import simpson
 
 # ============================================================================
 #                           LOGGING CONFIGURATION
 # ============================================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(levelname)s: %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
 # ============================================================================
 #                           ARGUMENT PARSING
 # ============================================================================
+
 
 def parse_arguments():
     """
@@ -47,43 +46,77 @@ def parse_arguments():
         description="Evaluate fitness of simulated SANS curves against reference data",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('directory', type=str,
-                        help='Directory with simulated .dat files and a ref/ subfolder')
-    ref_group = parser.add_argument_group('Reference files (deprecated - all .dat in ref/ are used)')
-    ref_group.add_argument('--deut-ref', type=str, default=None,
-                           help='Deprecated: ignored. All .dat files in ref/ are used.')
-    ref_group.add_argument('--prot-ref', type=str, default=None,
-                           help='Deprecated: ignored. All .dat files in ref/ are used.')
-    param_group = parser.add_argument_group('Evaluation parameters')
-    param_group.add_argument('--q-max', type=float, default=0.3,
-                             help='Maximum q value for truncation (default: 0.3 Å⁻¹)')
-    param_group.add_argument('--ratio-threshold', type=float, default=0.01,
-                             help='Minimum Imax/background ratio to accept a curve (default: 0.01)')
-    param_group.add_argument('--gamma', type=float, default=2,
-                             help='Exponent for Imax/background ratio in fitness '
-                                  'formula: fitness = product(areas) * ratio^gamma. '
-                                  'Default: 2 (quadratic). Use 0 to ignore ratio, '
-                                  '1 for linear weighting.')
-    param_group.add_argument('--i0-threshold', type=float, default=None,
-                             help=argparse.SUPPRESS)
-    output_group = parser.add_argument_group('Output control')
-    output_group.add_argument('-v', '--verbose', action='store_true')
-    output_group.add_argument('-q', '--quiet', action='store_true')
-    output_group.add_argument('--csv', type=str, default=None, metavar='FILE',
-                              help='Write filename, fitness_score and ratio to a CSV file')
+    parser.add_argument(
+        "directory",
+        type=str,
+        help="Directory with simulated .dat files and a ref/ subfolder",
+    )
+    ref_group = parser.add_argument_group(
+        "Reference files (deprecated - all .dat in ref/ are used)"
+    )
+    ref_group.add_argument(
+        "--deut-ref",
+        type=str,
+        default=None,
+        help="Deprecated: ignored. All .dat files in ref/ are used.",
+    )
+    ref_group.add_argument(
+        "--prot-ref",
+        type=str,
+        default=None,
+        help="Deprecated: ignored. All .dat files in ref/ are used.",
+    )
+    param_group = parser.add_argument_group("Evaluation parameters")
+    param_group.add_argument(
+        "--q-max",
+        type=float,
+        default=0.3,
+        help="Maximum q value for truncation (default: 0.3 Å⁻¹)",
+    )
+    param_group.add_argument(
+        "--ratio-threshold",
+        type=float,
+        default=0.01,
+        help="Minimum Imax/background ratio to accept a curve (default: 0.01)",
+    )
+    param_group.add_argument(
+        "--gamma",
+        type=float,
+        default=2,
+        help="Exponent for Imax/background ratio in fitness "
+        "formula: fitness = product(areas) * ratio^gamma. "
+        "Default: 2 (quadratic). Use 0 to ignore ratio, "
+        "1 for linear weighting.",
+    )
+    param_group.add_argument(
+        "--i0-threshold", type=float, default=None, help=argparse.SUPPRESS
+    )
+    output_group = parser.add_argument_group("Output control")
+    output_group.add_argument("-v", "--verbose", action="store_true")
+    output_group.add_argument("-q", "--quiet", action="store_true")
+    output_group.add_argument(
+        "--csv",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Write filename, fitness_score and ratio to a CSV file",
+    )
     args = parser.parse_args()
     if args.quiet:
         logger.setLevel(logging.WARNING)
     elif args.verbose:
         logger.setLevel(logging.DEBUG)
     if args.deut_ref or args.prot_ref:
-        logger.warning("--deut-ref / --prot-ref are deprecated: all .dat files in ref/ are used.")
+        logger.warning(
+            "--deut-ref / --prot-ref are deprecated: all .dat files in ref/ are used."
+        )
     return args
 
 
 # ============================================================================
 #                           FILE DISCOVERY
 # ============================================================================
+
 
 def find_dat_files(directory):
     """
@@ -101,7 +134,9 @@ def find_dat_files(directory):
     """
     if not os.path.isdir(directory):
         raise NotADirectoryError(f"'{directory}' is not a valid directory")
-    dat_files = [f for f in glob.glob(os.path.join(directory, "*.dat")) if os.path.isfile(f)]
+    dat_files = [
+        f for f in glob.glob(os.path.join(directory, "*.dat")) if os.path.isfile(f)
+    ]
     if not dat_files:
         raise FileNotFoundError(f"No .dat files found in '{directory}'")
     return sorted(dat_files)
@@ -111,7 +146,9 @@ def find_all_reference_files(ref_dir):
     """Return all .dat files found in ref_dir."""
     if not os.path.isdir(ref_dir):
         raise NotADirectoryError(f"Reference directory not found: {ref_dir}")
-    ref_files = [f for f in glob.glob(os.path.join(ref_dir, "*.dat")) if os.path.isfile(f)]
+    ref_files = [
+        f for f in glob.glob(os.path.join(ref_dir, "*.dat")) if os.path.isfile(f)
+    ]
     if not ref_files:
         raise FileNotFoundError(
             f"No .dat reference files found in {ref_dir}. "
@@ -132,11 +169,12 @@ def find_reference_files(ref_dir, deut_ref=None, prot_ref=None):
 #                           PARSING & UTILITIES
 # ============================================================================
 
+
 def parse_sans_file(filepath):
     q_values, I_values = [], []
-    with open(filepath, 'r') as f:
+    with open(filepath, "r") as f:
         for line in f:
-            if line.startswith('#'):
+            if line.startswith("#"):
                 continue
             parts = line.split()
             if len(parts) >= 2:
@@ -181,14 +219,14 @@ def regrid_curve(q_source, I_source, q_target):
         np.array: Interpolated I values
     """
     # Use cubic interpolation to regrid
-    I_regridded = griddata(q_source, I_source, q_target, method='cubic')
+    I_regridded = griddata(q_source, I_source, q_target, method="cubic")
 
     # Fallback to linear interpolation for NaN values
     if np.any(np.isnan(I_regridded)):
         # Fall back to linear interpolation for NaN values
-        I_linear = griddata(q_source, I_source, q_target, method='linear')
+        I_linear = griddata(q_source, I_source, q_target, method="linear")
         I_regridded = np.where(np.isnan(I_regridded), I_linear, I_regridded)
-    
+
     return I_regridded
 
 
@@ -204,6 +242,7 @@ def scale_curves(q, I_reference, I_to_scale):
     Returns:
         tuple: (I_scaled, a, b, chi2)
     """
+
     def linear_model(I, a, b):
         return a * I + b
 
@@ -211,12 +250,12 @@ def scale_curves(q, I_reference, I_to_scale):
         params, _ = curve_fit(linear_model, I_to_scale, I_reference)
         a, b = params
         I_scaled = a * I_to_scale + b
-        
+
         # Calculate chi^2 (area difference metric)
         chi2 = np.sum((I_reference - I_scaled) ** 2)
-        
+
         return I_scaled, a, b, chi2
-    
+
     except Exception as e:
         logger.warning(f"Scaling failed: {e}")
         return I_to_scale, 1.0, 0.0, np.inf
@@ -233,6 +272,7 @@ def calculate_area_difference(q, I1, I2):
 #                     RATIO CHECK
 # ============================================================================
 
+
 def extract_d2o_from_filename(filename):
     """
     Extract the D2O percentage from a curve filename.
@@ -247,7 +287,7 @@ def extract_d2o_from_filename(filename):
         int or None: D2O percentage, or None if not found in filename
     """
     basename = os.path.basename(filename)
-    match = re.search(r'_d2o(\d+)', basename)
+    match = re.search(r"_d2o(\d+)", basename)
     return int(match.group(1)) if match else None
 
 
@@ -266,7 +306,7 @@ def compute_incoherent_background(d2o_percent):
     return -0.0117 * d2o_percent + 1.25
 
 
-def ratio_check(I, d2o_percent, threshold=0.01):
+def ratio_check(I, d2o_percent, ratio_threshold=0.01):
     """
     Check if a curve is valid based on the Imax / background ratio.
 
@@ -286,16 +326,24 @@ def ratio_check(I, d2o_percent, threshold=0.01):
     """
     background = compute_incoherent_background(d2o_percent)
     if background <= 0:
-        logger.warning(f"Non-positive background ({background:.4f}) for D2O={d2o_percent}%; curve rejected")
+        logger.warning(
+            f"Non-positive background ({background:.4f}) for D2O={d2o_percent}%; curve rejected"
+        )
+        return 0.0
+    if np.max(I) < ratio_threshold:  # discard courves with Imax<0.01
+        logger.warning(f"Imax too low (Imax={np.max(I):.4e}); curve rejected")
         return 0.0
     ratio = np.max(I) / background
-    logger.debug(f"Ratio check: Imax={np.max(I):.4e}, background={background:.4f}, ratio={ratio:.4f}")
+    logger.debug(
+        f"Ratio check: Imax={np.max(I):.4e}, background={background:.4f}, ratio={ratio:.4f}"
+    )
     return ratio
 
 
 # ============================================================================
 #  SCALING AND FITNESS
 # ============================================================================
+
 
 def scaling_and_compare(q, I, references, q_max, ratio, gamma=2):
     """
@@ -324,7 +372,7 @@ def scaling_and_compare(q, I, references, q_max, ratio, gamma=2):
         area = calculate_area_difference(q_trunc, I_scaled, I_ref_regrid)
         fitness_product *= area
 
-    return fitness_product * (ratio ** gamma)
+    return fitness_product * (ratio**gamma)
 
 
 def fitness(q, I, references, q_max, file_path, ratio_threshold=0.01, gamma=2):
@@ -345,12 +393,16 @@ def fitness(q, I, references, q_max, file_path, ratio_threshold=0.01, gamma=2):
     d2o_percent = extract_d2o_from_filename(file_path)
 
     if d2o_percent is None:
-        logger.debug(f"Could not extract D2O from '{os.path.basename(file_path)}'; ratio check skipped")
+        logger.debug(
+            f"Could not extract D2O from '{os.path.basename(file_path)}'; ratio check skipped"
+        )
         ratio = 0.0
     else:
-        ratio = ratio_check(I, d2o_percent, threshold=ratio_threshold)
+        ratio = ratio_check(I, d2o_percent, ratio_threshold)
         if ratio < ratio_threshold:
-            logger.debug(f"Ratio check failed for '{os.path.basename(file_path)}': ratio={ratio:.4f}")
+            logger.debug(
+                f"Ratio check failed for '{os.path.basename(file_path)}': ratio={ratio:.4f}"
+            )
             return 0.0, ratio
 
     return scaling_and_compare(q, I, references, q_max, ratio, gamma=gamma), ratio
@@ -391,9 +443,16 @@ def normalize_fitness(fitness_values):
 #                           MAIN EVALUATION
 # ============================================================================
 
-def evaluate_population_fitness(directory, deut_ref=None, prot_ref=None,
-                                q_max=0.3, i0_threshold=None, ratio_threshold=0.01,
-                                gamma=2):
+
+def evaluate_population_fitness(
+    directory,
+    deut_ref=None,
+    prot_ref=None,
+    q_max=0.3,
+    i0_threshold=None,
+    ratio_threshold=0.01,
+    gamma=2,
+):
     """
     Evaluate fitness for all .dat files in directory against all references in ref/.
 
@@ -410,7 +469,9 @@ def evaluate_population_fitness(directory, deut_ref=None, prot_ref=None,
         (raw_fitness_scores, file_paths, ratios)
     """
     if deut_ref or prot_ref:
-        logger.debug("deut_ref/prot_ref are deprecated; all .dat files in ref/ are used.")
+        logger.debug(
+            "deut_ref/prot_ref are deprecated; all .dat files in ref/ are used."
+        )
 
     sim_files = find_dat_files(directory)
     logger.info(f"Found {len(sim_files)} simulated .dat files")
@@ -423,18 +484,24 @@ def evaluate_population_fitness(directory, deut_ref=None, prot_ref=None,
     for ref_path in ref_paths:
         q_ref, I_ref = parse_sans_file(ref_path)
         references.append((q_ref, I_ref))
-        logger.info(f"  Loaded reference: {os.path.basename(ref_path)} [{len(q_ref)} points]")
+        logger.info(
+            f"  Loaded reference: {os.path.basename(ref_path)} [{len(q_ref)} points]"
+        )
 
     raw_scores, valid_files, ratios = [], [], []
 
     for file_path in sim_files:
         try:
             q, I = parse_sans_file(file_path)
-            score, ratio = fitness(q, I, references, q_max, file_path, ratio_threshold, gamma=gamma)
+            score, ratio = fitness(
+                q, I, references, q_max, file_path, ratio_threshold, gamma=gamma
+            )
             raw_scores.append(score)
             valid_files.append(file_path)
             ratios.append(ratio)
-            logger.debug(f"{os.path.basename(file_path)}: ratio={ratio:.4f} score={score:.6e}")
+            logger.debug(
+                f"{os.path.basename(file_path)}: ratio={ratio:.4f} score={score:.6e}"
+            )
         except Exception as e:
             logger.warning(f"Skipping {os.path.basename(file_path)}: {e}")
             raw_scores.append(0.0)
@@ -455,7 +522,9 @@ def main():
         )
     except (NotADirectoryError, FileNotFoundError, ValueError) as e:
         logger.error(f"Evaluation failed: {e}")
-        import sys; sys.exit(1)
+        import sys
+
+        sys.exit(1)
 
     if not args.quiet:
         print("\n" + "=" * 60)
@@ -465,7 +534,9 @@ def main():
         print(f"Q max: {args.q_max:.3f} Å⁻¹")
         print(f"Ratio threshold: {args.ratio_threshold}")
         print(f"Files evaluated: {len(fitness_scores)}")
-        print(f"Files passing ratio check: {np.sum(fitness_scores > 0)}/{len(fitness_scores)}")
+        print(
+            f"Files passing ratio check: {np.sum(fitness_scores > 0)}/{len(fitness_scores)}"
+        )
         print(f"Best fitness: {np.max(fitness_scores):.4e}")
         if len(fitness_scores) > 0 and np.max(fitness_scores) > 0:
             best_idx = np.argmax(fitness_scores)
@@ -479,17 +550,22 @@ def main():
     if args.csv:
         csv_path = args.csv
         try:
-            with open(csv_path, 'w', newline='') as csvfile:
+            with open(csv_path, "w", newline="") as csvfile:
                 writer = csv.writer(csvfile)
-                writer.writerow(['filename', 'fitness_score', 'ratio'])
+                writer.writerow(["filename", "fitness_score", "ratio"])
                 for file_path, score, ratio in zip(sim_files, fitness_scores, ratios):
-                    writer.writerow([os.path.basename(file_path), f"{score:.4e}", f"{ratio:.4e}"])
+                    writer.writerow(
+                        [os.path.basename(file_path), f"{score:.4e}", f"{ratio:.4e}"]
+                    )
             if not args.quiet:
-                logger.info(f"Results saved to '{csv_path}' ({len(fitness_scores)} rows)")
+                logger.info(
+                    f"Results saved to '{csv_path}' ({len(fitness_scores)} rows)"
+                )
         except OSError as e:
             logger.error(f"Could not write CSV file '{csv_path}': {e}")
 
 
 if __name__ == "__main__":
     import sys
+
     main()
