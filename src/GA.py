@@ -30,17 +30,18 @@ Usage:
     )
 """
 
-import random
 import argparse
-import numpy as np
 import configparser
-from typing import List, Tuple
+import random
 from dataclasses import dataclass
+from typing import List
 
+import numpy as np
 
 # ============================================================================
 #                           ARGUMENT PARSING
 # ============================================================================
+
 
 def parse_arguments():
     """
@@ -58,53 +59,53 @@ Usage example:
   python GA.py --population_size 50 --d2o_initial 60
   python GA.py --elitism 5
   python GA.py -p 100 -e 3 -v 10
-        """
+        """,
     )
 
     # Optional config file (positional)
-    parser.add_argument(
-        "--config",
-        nargs="?",
-        help="Path to config.ini file"
-    )
+    parser.add_argument("--config", nargs="?", help="Path to config.ini file")
 
     # Population parameters
     parser.add_argument(
-        '-p', '--population_size',
+        "-p",
+        "--population_size",
         type=int,
-        help='Population size (number of chromosomes, MUST be a multiple of 3). Default: 30'
+        help="Population size (number of chromosomes, MUST be a multiple of 3). Default: 30",
     )
 
     parser.add_argument(
-        '-e', '--elitism',
+        "-e",
+        "--elitism",
         type=int,
-        help='Number of elite individuals preserved at each generation (must be ≤ population_size/3). Default: 5'
+        help="Number of elite individuals preserved at each generation (must be ≤ population_size/3). Default: 5",
     )
 
     parser.add_argument(
-        '-v', '--d2o_variation_rate',
+        "-v",
+        "--d2o_variation_rate",
         type=int,
-        help='Maximum D2O variation amplitude. Default: 50'
+        help="Maximum D2O variation amplitude. Default: 50",
     )
     parser.add_argument(
-        '--d2o',
+        "--d2o",
         type=int,
-        nargs='+',  # accept one or more values
+        nargs="+",  # accept one or more values
         default=None,
-        help='If defined, blocks the d2o variation for a given list of d2o values'
+        help="If defined, blocks the d2o variation for a given list of d2o values",
     )
 
     # Execution parameters
     parser.add_argument(
-        '-g', '--generations',
+        "-g",
+        "--generations",
         type=int,
-        help='Number of generations to execute. Default: 1'
+        help="Number of generations to execute. Default: 1",
     )
 
     parser.add_argument(
-        '--seed',
+        "--seed",
         type=int,
-        help='Random seed for reproducibility. Default: None (random)'
+        help="Random seed for reproducibility. Default: None (random)",
     )
 
     return parser.parse_args()
@@ -118,8 +119,7 @@ def validate_config(cfg):
 
     if cfg["population_size"] % 3 != 0:
         raise ValueError(
-            f"population_size must be a multiple of 3 "
-            f"(got {cfg['population_size']})"
+            f"population_size must be a multiple of 3 (got {cfg['population_size']})"
         )
 
     if cfg["elitism"] < 0:
@@ -127,8 +127,7 @@ def validate_config(cfg):
 
     if cfg["elitism"] > cfg["population_size"] // 3:
         raise ValueError(
-            f"elitism must be ≤ population_size/3 "
-            f"(max {cfg['population_size'] // 3})"
+            f"elitism must be ≤ population_size/3 (max {cfg['population_size'] // 3})"
         )
 
     # Rates
@@ -144,7 +143,7 @@ def validate_config(cfg):
     # Accept both 18 (effective) and 20 (canonical) restriction lengths.
     # Auto-convert 20 -> 18 in place so downstream code always sees 18.
     restr_len = len(cfg["restrictions"])
-    if restr_len == len(AMINO_ACIDS):                      # 20 -> convert
+    if restr_len == len(AMINO_ACIDS):  # 20 -> convert
         cfg["restrictions"] = merge_restrictions_to_18(cfg["restrictions"])
     elif restr_len != N_EFFECTIVE_AA:
         raise ValueError(
@@ -166,9 +165,7 @@ def validate_config(cfg):
                 raise TypeError(f"d2o value {value} is not an integer")
 
             if not (0 <= value <= 100):
-                raise ValueError(
-                    f"d2o value {value} out of range [0, 100]"
-                )
+                raise ValueError(f"d2o value {value} out of range [0, 100]")
 
 
 def load_config_ini(path: str):
@@ -199,18 +196,18 @@ def load_config_ini(path: str):
         config.getboolean("RESTRICTIONS", aa.code_3, fallback=True)
         for aa in AMINO_ACIDS
     ]
-    restrictions_18 = merge_restrictions_to_18(restrictions_20)   # NEW
+    restrictions_18 = merge_restrictions_to_18(restrictions_20)  # NEW
 
     cfg = {
         "population_size": config.getint("POPULATION", "population_size"),
         "elitism": config.getint("POPULATION", "elitism"),
-        "d2o_variation_rate": config.getint("POPULATION",  "d2o_variation_rate"),
+        "d2o_variation_rate": config.getint("POPULATION", "d2o_variation_rate"),
         "mutation_rate": config.getfloat("GENETIC", "mutation_rate"),
         "crossover_rate": config.getfloat("GENETIC", "crossover_rate"),
         "generations": config.getint("EXECUTION", "generations"),
         "seed": config.getint("EXECUTION", "seed", fallback=None),
-        "restrictions":       restrictions_18,   # 18-element list (CHANGED from 20)
-        "d2o":                d2o_list,
+        "restrictions": restrictions_18,  # 18-element list (CHANGED from 20)
+        "d2o": d2o_list,
     }
     return cfg
 
@@ -223,20 +220,25 @@ def merge_config(cli_args, ini_cfg=None):
         return cli if cli is not None else ini if ini is not None else default
 
     return {
-        "population_size": pick(cli_args.population_size, ini_cfg.get("population_size"), 30),
+        "population_size": pick(
+            cli_args.population_size, ini_cfg.get("population_size"), 30
+        ),
         "elitism": pick(cli_args.elitism, ini_cfg.get("elitism"), 2),
-        "d2o_variation_rate": pick(cli_args.d2o_variation_rate, ini_cfg.get("d2o_variation_rate"), 5),
+        "d2o_variation_rate": pick(
+            cli_args.d2o_variation_rate, ini_cfg.get("d2o_variation_rate"), 5
+        ),
         "generations": pick(cli_args.generations, ini_cfg.get("generations"), 1),
         "seed": pick(cli_args.seed, ini_cfg.get("seed"), None),
         # Default: all 18 effective genes are modifiable
-        "restrictions":       ini_cfg.get("restrictions", [True] * N_EFFECTIVE_AA),   # CHANGED
-        "d2o":                pick(cli_args.d2o,               ini_cfg.get("d2o"),               None),
+        "restrictions": ini_cfg.get("restrictions", [True] * N_EFFECTIVE_AA),  # CHANGED
+        "d2o": pick(cli_args.d2o, ini_cfg.get("d2o"), None),
     }
 
 
 # ============================================================================
 #                   DATA STRUCTURE DEFINITIONS
 # ============================================================================
+
 
 @dataclass
 class AminoAcid:
@@ -248,6 +250,7 @@ class AminoAcid:
         code_3 (str): 3-letter code, e.g. "ALA" or "ASN+ASP" for linked pairs
         code_1 (str): 1-letter code, e.g. "A" or "ND" for linked pairs
     """
+
     name: str
     code_3: str
     code_1: str
@@ -256,26 +259,26 @@ class AminoAcid:
 # Full canonical list of 20 standard amino acids (used for PDB operations).
 # indices are referenced throughout the codebase.
 AMINO_ACIDS = [
-    AminoAcid("Alanine",       "ALA", "A" ),  # index 0
-    AminoAcid("Arginine",      "ARG", "R" ),  # index 1
-    AminoAcid("Asparagine",    "ASN", "N" ),  # index 2
-    AminoAcid("Aspartic acid", "ASP", "D" ),  # index 3
-    AminoAcid("Cysteine",      "CYS", "C" ),  # index 4
-    AminoAcid("Glutamic acid", "GLU", "E" ),  # index 5
-    AminoAcid("Glutamine",     "GLN", "Q" ),  # index 6
-    AminoAcid("Glycine",       "GLY", "G" ),  # index 7
-    AminoAcid("Histidine",     "HIS", "H" ),  # index 8
-    AminoAcid("Isoleucine",    "ILE", "I" ),  # index 9
-    AminoAcid("Leucine",       "LEU", "L" ),  # index 10
-    AminoAcid("Lysine",        "LYS", "K" ),  # index 11
-    AminoAcid("Methionine",    "MET", "M" ),  # index 12
-    AminoAcid("Phenylalanine", "PHE", "F" ),  # index 13
-    AminoAcid("Proline",       "PRO", "P" ),  # index 14
-    AminoAcid("Serine",        "SER", "S" ),  # index 15
-    AminoAcid("Threonine",     "THR", "T" ),  # index 16
-    AminoAcid("Tryptophan",    "TRP", "W" ),  # index 17
-    AminoAcid("Tyrosine",      "TYR", "Y" ),  # index 18
-    AminoAcid("Valine",        "VAL", "V" ),  # index 19
+    AminoAcid("Alanine", "ALA", "A"),  # index 0
+    AminoAcid("Arginine", "ARG", "R"),  # index 1
+    AminoAcid("Asparagine", "ASN", "N"),  # index 2
+    AminoAcid("Aspartic acid", "ASP", "D"),  # index 3
+    AminoAcid("Cysteine", "CYS", "C"),  # index 4
+    AminoAcid("Glutamic acid", "GLU", "E"),  # index 5
+    AminoAcid("Glutamine", "GLN", "Q"),  # index 6
+    AminoAcid("Glycine", "GLY", "G"),  # index 7
+    AminoAcid("Histidine", "HIS", "H"),  # index 8
+    AminoAcid("Isoleucine", "ILE", "I"),  # index 9
+    AminoAcid("Leucine", "LEU", "L"),  # index 10
+    AminoAcid("Lysine", "LYS", "K"),  # index 11
+    AminoAcid("Methionine", "MET", "M"),  # index 12
+    AminoAcid("Phenylalanine", "PHE", "F"),  # index 13
+    AminoAcid("Proline", "PRO", "P"),  # index 14
+    AminoAcid("Serine", "SER", "S"),  # index 15
+    AminoAcid("Threonine", "THR", "T"),  # index 16
+    AminoAcid("Tryptophan", "TRP", "W"),  # index 17
+    AminoAcid("Tyrosine", "TYR", "Y"),  # index 18
+    AminoAcid("Valine", "VAL", "V"),  # index 19
 ]
 
 # Dictionary for quick access by 3-letter code
@@ -284,27 +287,27 @@ AA_DICT = {aa.code_3: i for i, aa in enumerate(AMINO_ACIDS)}
 # LINKED AMINO ACID GROUPS
 # Each entry is a list of 3-letter codes that always deuterate together.
 # Linked pairs:
-#   ASN + ASP  
-#   GLU + GLN  
+#   ASN + ASP
+#   GLU + GLN
 LINKED_AA_GROUPS: List[List[str]] = [
-    ["ALA"],            # group  0  -> AMINO_ACIDS index 0
-    ["ARG"],            # group  1  -> AMINO_ACIDS index 1
-    ["ASN", "ASP"],     # group  2  -> AMINO_ACIDS indices 2, 3
-    ["CYS"],            # group  3  -> AMINO_ACIDS index 4
-    ["GLU", "GLN"],     # group  4  -> AMINO_ACIDS indices 5, 6
-    ["GLY"],            # group  5  -> AMINO_ACIDS index 7
-    ["HIS"],            # group  6  -> AMINO_ACIDS index 8
-    ["ILE"],            # group  7  -> AMINO_ACIDS index 9
-    ["LEU"],            # group  8  -> AMINO_ACIDS index 10
-    ["LYS"],            # group  9  -> AMINO_ACIDS index 11
-    ["MET"],            # group 10  -> AMINO_ACIDS index 12
-    ["PHE"],            # group 11  -> AMINO_ACIDS index 13
-    ["PRO"],            # group 12  -> AMINO_ACIDS index 14
-    ["SER"],            # group 13  -> AMINO_ACIDS index 15
-    ["THR"],            # group 14  -> AMINO_ACIDS index 16
-    ["TRP"],            # group 15  -> AMINO_ACIDS index 17
-    ["TYR"],            # group 16  -> AMINO_ACIDS index 18
-    ["VAL"],            # group 17  -> AMINO_ACIDS index 19
+    ["ALA"],  # group  0  -> AMINO_ACIDS index 0
+    ["ARG"],  # group  1  -> AMINO_ACIDS index 1
+    ["ASN", "ASP"],  # group  2  -> AMINO_ACIDS indices 2, 3
+    ["CYS"],  # group  3  -> AMINO_ACIDS index 4
+    ["GLU", "GLN"],  # group  4  -> AMINO_ACIDS indices 5, 6
+    ["GLY"],  # group  5  -> AMINO_ACIDS index 7
+    ["HIS"],  # group  6  -> AMINO_ACIDS index 8
+    ["ILE"],  # group  7  -> AMINO_ACIDS index 9
+    ["LEU"],  # group  8  -> AMINO_ACIDS index 10
+    ["LYS"],  # group  9  -> AMINO_ACIDS index 11
+    ["MET"],  # group 10  -> AMINO_ACIDS index 12
+    ["PHE"],  # group 11  -> AMINO_ACIDS index 13
+    ["PRO"],  # group 12  -> AMINO_ACIDS index 14
+    ["SER"],  # group 13  -> AMINO_ACIDS index 15
+    ["THR"],  # group 14  -> AMINO_ACIDS index 16
+    ["TRP"],  # group 15  -> AMINO_ACIDS index 17
+    ["TYR"],  # group 16  -> AMINO_ACIDS index 18
+    ["VAL"],  # group 17  -> AMINO_ACIDS index 19
 ]
 
 # Dictionary 3-letter code -> group index in LINKED_AA_GROUPS
@@ -327,18 +330,22 @@ for _grp in LINKED_AA_GROUPS:
     else:
         # Linked pair — build a synthetic AminoAcid
         _aa_objects = [next(aa for aa in AMINO_ACIDS if aa.code_3 == c) for c in _grp]
-        EFFECTIVE_AMINO_ACIDS.append(AminoAcid(
-            name  = "/".join(aa.name   for aa in _aa_objects),   # e.g. "Asparagine/Aspartic acid"
-            code_3= "+".join(aa.code_3 for aa in _aa_objects),   # e.g. "ASN+ASP"
-            code_1= "".join(aa.code_1  for aa in _aa_objects),   # e.g. "ND"
-        ))
+        EFFECTIVE_AMINO_ACIDS.append(
+            AminoAcid(
+                name="/".join(
+                    aa.name for aa in _aa_objects
+                ),  # e.g. "Asparagine/Aspartic acid"
+                code_3="+".join(aa.code_3 for aa in _aa_objects),  # e.g. "ASN+ASP"
+                code_1="".join(aa.code_1 for aa in _aa_objects),  # e.g. "ND"
+            )
+        )
 
 # Number of effective genes in a chromosome (18)
-N_EFFECTIVE_AA: int = len(EFFECTIVE_AMINO_ACIDS)   # 18
+N_EFFECTIVE_AA: int = len(EFFECTIVE_AMINO_ACIDS)  # 18
 
 
+# expand 18-element vector -> 20-element vector
 
-# expand 18-element vector -> 20-element vector 
 
 def expand_deuteration_vector(deut_18: List[bool]) -> List[bool]:
     """
@@ -363,7 +370,7 @@ def expand_deuteration_vector(deut_18: List[bool]) -> List[bool]:
 
     """
     if len(deut_18) == 20:
-        return list(deut_18)   # already full-length, pass through
+        return list(deut_18)  # already full-length, pass through
 
     if len(deut_18) != N_EFFECTIVE_AA:
         raise ValueError(
@@ -371,10 +378,10 @@ def expand_deuteration_vector(deut_18: List[bool]) -> List[bool]:
             f"got {len(deut_18)}"
         )
 
-    deut_20 = [False] * len(AMINO_ACIDS)   # 20 elements, default False
+    deut_20 = [False] * len(AMINO_ACIDS)  # 20 elements, default False
     for gene_idx, group in enumerate(LINKED_AA_GROUPS):
         for aa_code in group:
-            aa_idx = AA_DICT[aa_code]      # position in AMINO_ACIDS (0-19)
+            aa_idx = AA_DICT[aa_code]  # position in AMINO_ACIDS (0-19)
             deut_20[aa_idx] = deut_18[gene_idx]
     return deut_20
 
@@ -397,7 +404,7 @@ def merge_restrictions_to_18(restrictions_20: List[bool]) -> List[bool]:
         If an 18-element list is passed it is returned unchanged.
     """
     if len(restrictions_20) == N_EFFECTIVE_AA:
-        return list(restrictions_20)   # already 18 elements
+        return list(restrictions_20)  # already 18 elements
 
     if len(restrictions_20) != len(AMINO_ACIDS):
         raise ValueError(
@@ -419,6 +426,7 @@ restrictions = [True] * N_EFFECTIVE_AA
 # ============================================================================
 #                           CHROMOSOME CLASS
 # ============================================================================
+
 
 class Chromosome:
     """
@@ -443,8 +451,14 @@ class Chromosome:
                      creation generation. Preserved when copied to a new generation.
     """
 
-    def __init__(self, aa_list: List[AminoAcid], modifiable: List[bool], fixed_d2o: List[int],
-                 generation: int = 0, index: int = 0):
+    def __init__(
+        self,
+        aa_list: List[AminoAcid],
+        modifiable: List[bool],
+        fixed_d2o: List[int],
+        generation: int = 0,
+        index: int = 0,
+    ):
         """
         Initializes the chromosome with a random deuteration configuration and d2o.
 
@@ -461,14 +475,18 @@ class Chromosome:
         self.index = index
         self.randomize_deuteration()
         self.fixed_d2o = fixed_d2o
-        self.d2o = random.choice(fixed_d2o) if fixed_d2o is not None else random.randint(0, 100)
+        self.d2o = (
+            random.choice(fixed_d2o)
+            if fixed_d2o is not None
+            else random.randint(0, 100)
+        )
         self.fitness = 0.0
-        self.ratio  = 0
-        self.H  = 0
-        self.D  = 0
+        self.ratio = 0
+        self.H = 0
+        self.D = 0
         self.non_labile_D = 0
 
-    def copy(self) -> 'Chromosome':
+    def copy(self) -> "Chromosome":
         """
         Creates a deep copy of this chromosome.
 
@@ -476,7 +494,9 @@ class Chromosome:
         tier-1 (selected/elite) chromosomes keep their provenance across generations,
         which is also used to derive their stable PDB/SANS filenames.
         """
-        new_chrom = Chromosome(self.aa_list, self.modifiable, self.fixed_d2o, self.generation, self.index)
+        new_chrom = Chromosome(
+            self.aa_list, self.modifiable, self.fixed_d2o, self.generation, self.index
+        )
         new_chrom.deuteration = self.deuteration[:]
         new_chrom.d2o = self.d2o
         new_chrom.fitness = self.fitness
@@ -494,7 +514,7 @@ class Chromosome:
         - Respects modifiable constraints
         - Each modifiable AA has 50% chance to be deuterated
         """
-        n_genes = len(self.aa_list)          # 18 effective genes
+        n_genes = len(self.aa_list)  # 18 effective genes
         self.deuteration = [False] * n_genes
 
         # Choose how many genes to deuterate (0 to n_genes)
@@ -516,19 +536,19 @@ class Chromosome:
             variation_range: Maximum variation amplitude
         """
         max_down = min(variation_range, self.d2o)
-        max_up   = min(variation_range, 100 - self.d2o)
+        max_up = min(variation_range, 100 - self.d2o)
         variation = random.randint(-max_down, max_up)
         self.d2o += variation
 
     def gaussian_modify_d2o(self, variation_range: int = 5) -> None:
         """
         Modifies D2O value with a binomial bell-curve distribution centred on 0.
-	Without ends bias and more scrict range control
+        Without ends bias and more scrict range control
 
         Args:
             variation_range:  Maximum variation amplitude
         """
-        sigma = variation_range / 2  # contain ~95% of values 
+        sigma = variation_range / 2  # contain ~95% of values
 
         while True:
             variation = int(round(random.gauss(0, sigma)))
@@ -542,7 +562,7 @@ class Chromosome:
                     self.d2o = new_value
                     return
 
-    def __eq__(self, other: 'Chromosome') -> bool:
+    def __eq__(self, other: "Chromosome") -> bool:
         """Checks identity based on deuteration vector + D2O (fitness excluded)."""
         if not isinstance(other, Chromosome):
             return False
@@ -560,12 +580,18 @@ class Chromosome:
             tag = "(D)" if self.deuteration[i] else "(H)"
             result.append(f"{aa.code_3}{tag}")
         prov = f"[gen{self.generation:02d}_Chr{self.index:03d}]"
-        return (prov + " " + " | ".join(result) +
-                f" | D2O={self.d2o}% | Fitness={self.fitness:.4e}")
+        return (
+            prov
+            + " "
+            + " | ".join(result)
+            + f" | D2O={self.d2o}% | Fitness={self.fitness:.4e}"
+        )
 
     def __repr__(self) -> str:
-        return (f"Chromosome(gen={self.generation}, idx={self.index}, "
-                f"d2o={self.d2o}, fitness={self.fitness:.4e})")
+        return (
+            f"Chromosome(gen={self.generation}, idx={self.index}, "
+            f"d2o={self.d2o}, fitness={self.fitness:.4e})"
+        )
 
     def __hash__(self) -> int:
         """Hash based on deuteration vector + D2O (not fitness/generation/index)."""
@@ -575,6 +601,7 @@ class Chromosome:
 # ============================================================================
 #                   POPULATION GENERATOR
 # ============================================================================
+
 
 class PopulationGenerator:
     """
@@ -593,13 +620,15 @@ class PopulationGenerator:
         d2o (List[int] | None):     Fixed D2O values, or None for free variation
     """
 
-    def __init__(self,
-                 aa_list: List[AminoAcid],
-                 modifiable: List[bool],
-                 population_size: int,
-                 elitism: int,
-                 d2o_variation_rate: int,
-                 d2o: List[int]):
+    def __init__(
+        self,
+        aa_list: List[AminoAcid],
+        modifiable: List[bool],
+        population_size: int,
+        elitism: int,
+        d2o_variation_rate: int,
+        d2o: List[int],
+    ):
         """
         Initializes the generator.
 
@@ -615,10 +644,14 @@ class PopulationGenerator:
             ValueError: If elitism > population_size/3
         """
         if population_size % 3 != 0:
-            raise ValueError(f"population_size must be a multiple of 3 (received: {population_size})")
+            raise ValueError(
+                f"population_size must be a multiple of 3 (received: {population_size})"
+            )
 
         if elitism > population_size // 3:
-            raise ValueError(f"elitism ({elitism}) must be ≤ population_size/3 ({population_size // 3})")
+            raise ValueError(
+                f"elitism ({elitism}) must be ≤ population_size/3 ({population_size // 3})"
+            )
 
         self.aa_list = aa_list
         self.modifiable = modifiable
@@ -646,10 +679,10 @@ class PopulationGenerator:
         max_attempts = self.population_size * 1000
 
         while len(population) < self.population_size and attempts < max_attempts:
-            chrom = Chromosome(self.aa_list, self.modifiable,self.d2o)
+            chrom = Chromosome(self.aa_list, self.modifiable, self.d2o)
             if self._unique_check(chrom, population):
                 chrom.generation = generation
-                chrom.index = len(population) + 1   # 1-based
+                chrom.index = len(population) + 1  # 1-based
                 population.append(chrom)
             attempts += 1
 
@@ -661,10 +694,12 @@ class PopulationGenerator:
 
         return population
 
-    def generate_next_generation(self,
-                                 previous_population: List[Chromosome],
-                                 d2o_variation_rate: int = 5,
-                                 new_generation: int = 1) -> List[Chromosome]:
+    def generate_next_generation(
+        self,
+        previous_population: List[Chromosome],
+        d2o_variation_rate: int = 5,
+        new_generation: int = 1,
+    ) -> List[Chromosome]:
         """
         Generates the next generation from the previous population.
 
@@ -700,8 +735,10 @@ class PopulationGenerator:
                               Fitness not yet set for tier-2/3.
         """
         if len(previous_population) != self.population_size:
-            raise ValueError(f"Previous population size ({len(previous_population)}) "
-                             f"!= expected size ({self.population_size})")
+            raise ValueError(
+                f"Previous population size ({len(previous_population)}) "
+                f"!= expected size ({self.population_size})"
+            )
 
         # Sort by decreasing fitness for selection
         sorted_pop = sorted(previous_population, key=lambda x: x.fitness, reverse=True)
@@ -716,13 +753,13 @@ class PopulationGenerator:
 
         for i, chrom in enumerate(tier2):
             chrom.generation = new_generation
-            chrom.index = tier_size + i + 1          # indices tier_size+1 .. 2*tier_size
+            chrom.index = tier_size + i + 1  # indices tier_size+1 .. 2*tier_size
 
         # TIER 3: Crossover (n/3)  new chromosomes
-        tier3 = self._crossover_tier3(tier1, tier2, d2o_variation_rate, self.d2o )
+        tier3 = self._crossover_tier3(tier1, tier2, d2o_variation_rate, self.d2o)
         for i, chrom in enumerate(tier3):
             chrom.generation = new_generation
-            chrom.index = 2 * tier_size + i + 1      # indices 2*tier_size+1 .. 3*tier_size
+            chrom.index = 2 * tier_size + i + 1  # indices 2*tier_size+1 .. 3*tier_size
 
         new_population = tier1 + tier2 + tier3
 
@@ -737,11 +774,15 @@ class PopulationGenerator:
     #                       PRIVATE HELPERS
     # ------------------------------------------------------------------
 
-    def _unique_check(self, chromosome: Chromosome, population: List[Chromosome]) -> bool:
+    def _unique_check(
+        self, chromosome: Chromosome, population: List[Chromosome]
+    ) -> bool:
         """Returns True if chromosome is not already in population."""
         return chromosome not in population
 
-    def _calcule_selection_probabilities(self, population: List[Chromosome]) -> List[float]:
+    def _calcule_selection_probabilities(
+        self, population: List[Chromosome]
+    ) -> List[float]:
         """Softmax-based selection probabilities with adaptive scaling.
 
         Normalizes fitness relative to the range within the population,
@@ -775,7 +816,7 @@ class PopulationGenerator:
 
         # Part B: Probabilistic selection
         if tier_size - self.elitism > 0:
-            pop_to_select = sorted_population[self.elitism:]
+            pop_to_select = sorted_population[self.elitism :]
             prob = self._calcule_selection_probabilities(pop_to_select)
             while len(selects) < tier_size:
                 selected = random.choices(pop_to_select, weights=prob, k=1)[0]
@@ -783,9 +824,9 @@ class PopulationGenerator:
                     selects.append(selected.copy())
         return selects
 
-    def _mutation_tier2(self,
-                        selectionnes: List[Chromosome],
-                        d2o_variation_rate: float, d2o: List[int]) -> List[Chromosome]:
+    def _mutation_tier2(
+        self, selectionnes: List[Chromosome], d2o_variation_rate: float, d2o: List[int]
+    ) -> List[Chromosome]:
         """
         TIER 2: n/3 chromosomes produced by mutation.
 
@@ -801,9 +842,10 @@ class PopulationGenerator:
             enfant = parent.copy()
 
             # Flip 1-5 modifiable genes in the 18-gene space
-            nombre_mutations    = random.choice([1, 2, 3, 4, 5])
-            indices_modifiables = [i for i in range(len(self.aa_list))
-                                   if self.modifiable[i]]
+            nombre_mutations = random.choice([1, 2, 3, 4, 5])
+            indices_modifiables = [
+                i for i in range(len(self.aa_list)) if self.modifiable[i]
+            ]
             if len(indices_modifiables) >= nombre_mutations:
                 indices_a_muter = random.sample(indices_modifiables, nombre_mutations)
                 for idx in indices_a_muter:
@@ -812,7 +854,7 @@ class PopulationGenerator:
             # D2O update
             if d2o is None:
                 enfant.gaussian_modify_d2o(d2o_variation_rate)
-            else :
+            else:
                 enfant.d2o = random.choice(d2o)
 
             if self._unique_check(enfant, mutes + selectionnes):
@@ -820,10 +862,13 @@ class PopulationGenerator:
 
         return mutes
 
-    def _crossover_tier3(self, selected: List[Chromosome],
-                         mutes: List[Chromosome],
-                         d2o_variation_rate: float,
-                         d2o: List[int]) -> List[Chromosome]:
+    def _crossover_tier3(
+        self,
+        selected: List[Chromosome],
+        mutes: List[Chromosome],
+        d2o_variation_rate: float,
+        d2o: List[int],
+    ) -> List[Chromosome]:
         """
         TIER 3: n/3 chromosomes produced by crossover.
 
@@ -831,7 +876,7 @@ class PopulationGenerator:
         the 18-gene deuteration vectors.  D2O is randomised with a wider
         gaussian (2× variation_rate) or sampled from the fixed list.
         """
-        tier_size  = self.population_size // 3
+        tier_size = self.population_size // 3
         crossovers = []
 
         while len(crossovers) < tier_size:
@@ -841,8 +886,7 @@ class PopulationGenerator:
 
             enfant = Chromosome(self.aa_list, self.modifiable, self.d2o)
             enfant.deuteration = (
-                parent1.deuteration[:cut_point] +
-                parent2.deuteration[cut_point:]
+                parent1.deuteration[:cut_point] + parent2.deuteration[cut_point:]
             )
 
             if d2o is None:
@@ -860,20 +904,21 @@ class PopulationGenerator:
 #                   UTILITY FUNCTIONS
 # ============================================================================
 
+
 def display_config(cfg: dict):
     """Displays the genetic algorithm configuration."""
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("GENETIC ALGORITHM CONFIGURATION")
-    print("="*50)
+    print("=" * 50)
     print(f"Population size      : {cfg['population_size']}")
     print(f"Elitism              : {cfg['elitism']}")
-    if cfg.get("d2o") is None :
+    if cfg.get("d2o") is None:
         print(f"D2O variation rate   : ±{cfg['d2o_variation_rate']}%")
     else:
         d2o_msg = "D2O values           : " + " ".join(str(v) for v in cfg["d2o"])
         print(d2o_msg)
     print(f"Generations          : {cfg['generations']}")
-    if cfg['seed'] is not None:
+    if cfg["seed"] is not None:
         print(f"Random seed          : {cfg['seed']}")
     print(f"Effective gene count : {N_EFFECTIVE_AA} (ASN+ASP and GLU+GLN linked)")
     print("=" * 50 + "\n")
@@ -889,9 +934,9 @@ def simulate_sans_evaluation(population: List[Chromosome]) -> List[Chromosome]:
     return population
 
 
-def sort_and_display_population(population: List[Chromosome],
-                                population_size: int,
-                                generation: int = 1) -> List[Chromosome]:
+def sort_and_display_population(
+    population: List[Chromosome], population_size: int, generation: int = 1
+) -> List[Chromosome]:
     """
     Sorts population by fitness and displays it with tier separators.
     Returns sorted population (best first).
@@ -912,40 +957,44 @@ def sort_and_display_population(population: List[Chromosome],
 def run_genetic_algorithm(cfg: dict):
     """Main execution function for the genetic algorithm (standalone/demo mode)."""
     generator = PopulationGenerator(
-        aa_list=EFFECTIVE_AMINO_ACIDS,         # 18 effective genes
-        modifiable=cfg["restrictions"],         # 18-element list
+        aa_list=EFFECTIVE_AMINO_ACIDS,  # 18 effective genes
+        modifiable=cfg["restrictions"],  # 18-element list
         population_size=cfg["population_size"],
         elitism=cfg["elitism"],
         d2o_variation_rate=cfg["d2o_variation_rate"],
-        d2o=cfg["d2o"]
+        d2o=cfg["d2o"],
     )
 
     print("\n>>> GENERATION 1 - Initial population creation")
     population = generator.generate_initial_population(generation=0)
     population = simulate_sans_evaluation(population)
-    sorted_pop = sort_and_display_population(population, cfg["population_size"], generation=1)
+    sorted_pop = sort_and_display_population(
+        population, cfg["population_size"], generation=1
+    )
 
     for gen in range(2, cfg["generations"] + 1):
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print(f">>> GENERATION {gen} - Population evolution")
-        print('='*80)
+        print("=" * 80)
 
         population = generator.generate_next_generation(
             previous_population=sorted_pop,
-            mutation_rate=cfg["mutation_rate"],
-            crossover_rate=cfg["crossover_rate"],
             d2o_variation_rate=cfg["d2o_variation_rate"],
-            new_generation=gen - 1
+            new_generation=gen - 1,
         )
 
         population = simulate_sans_evaluation(population)
-        sorted_pop = sort_and_display_population(population, cfg["population_size"], generation=gen)
+        sorted_pop = sort_and_display_population(
+            population, cfg["population_size"], generation=gen
+        )
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("ALGORITHM COMPLETED")
-    print("="*80)
+    print("=" * 80)
     print(f"Best solution: {sorted_pop[0]}")
-    print(f"Expanded 20-AA vector: {expand_deuteration_vector(sorted_pop[0].deuteration)}")
+    print(
+        f"Expanded 20-AA vector: {expand_deuteration_vector(sorted_pop[0].deuteration)}"
+    )
     print("=" * 80 + "\n")
 
 
@@ -953,15 +1002,16 @@ def run_genetic_algorithm(cfg: dict):
 #                           MAIN EXECUTION
 # ============================================================================
 
+
 def main():
-    args   = parse_arguments()
+    args = parse_arguments()
     ini_cfg = load_config_ini(args.config) if args.config else None
-    cfg    = merge_config(args, ini_cfg)
+    cfg = merge_config(args, ini_cfg)
 
     try:
         validate_config(cfg)
     except ValueError as e:
-        print(f"\n CONFIGURATION ERROR")
+        print("\n CONFIGURATION ERROR")
         print(f"   {e}\n")
         exit(1)
 
