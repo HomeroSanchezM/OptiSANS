@@ -336,7 +336,10 @@ def merge_config(cli_args: argparse.Namespace, ini_cfg: Optional[Dict] = None) -
     Merges CLI arguments with INI configuration (CLI takes precedence).
 
     Args:
-        cli_args: Parsed command-line arguments
+        cli_args: Parsed command-line arguments or any object with the same
+                  attributes (``input_pdb``, ``output_pdb``, ``d2o_percent``,
+                  ``all``, ``verbose``, ``config``, plus one ``--<AA>`` flag
+                  per standard amino acid).
         ini_cfg: Configuration loaded from INI file (optional)
 
     Returns:
@@ -350,16 +353,16 @@ def merge_config(cli_args: argparse.Namespace, ini_cfg: Optional[Dict] = None) -
 
     # Build deuteration vector from CLI flags
     cli_deuteration_vector = None
-    if cli_args.all:
+    if getattr(cli_args, "all", False):
         # --all overrides everything: deuterate all AAs
         cli_deuteration_vector = [True] * len(AMINO_ACIDS)
     else:
         # Check if any AA was explicitly set via CLI
-        has_aa_selection = any(getattr(cli_args, aa.code_3) is not None for aa in AMINO_ACIDS)
+        has_aa_selection = any(getattr(cli_args, aa.code_3, None) is not None for aa in AMINO_ACIDS)
         if has_aa_selection:
             cli_deuteration_vector = []
             for aa in AMINO_ACIDS:
-                cli_value = getattr(cli_args, aa.code_3)
+                cli_value = getattr(cli_args, aa.code_3, None)
                 # If explicitly set, use CLI value, otherwise keep INI/default
                 if cli_value is not None:
                     cli_deuteration_vector.append(cli_value)
@@ -377,24 +380,82 @@ def merge_config(cli_args: argparse.Namespace, ini_cfg: Optional[Dict] = None) -
         ini_vector = ini_cfg.get("deuteration_vector", [False] * len(AMINO_ACIDS))
         deuteration_vector = []
         for i, aa in enumerate(AMINO_ACIDS):
-            cli_value = getattr(cli_args, aa.code_3)
+            cli_value = getattr(cli_args, aa.code_3, None)
             deuteration_vector.append(cli_value if cli_value is not None else ini_vector[i])
 
     return {
         # I/O
-        "input_pdb": pick(cli_args.input_pdb, ini_cfg.get("input_pdb"), None),
-        "output_pdb": pick(cli_args.output_pdb, ini_cfg.get("output_pdb"), "deuterated.pdb"),
+        "input_pdb": pick(getattr(cli_args, "input_pdb", None), ini_cfg.get("input_pdb"), None),
+        "output_pdb": pick(getattr(cli_args, "output_pdb", None), ini_cfg.get("output_pdb"), "deuterated.pdb"),
         
         # Deuteration
-        "d2o_percent": pick(cli_args.d2o_percent, ini_cfg.get("d2o_percent"), 0.0),
+        "d2o_percent": pick(getattr(cli_args, "d2o_percent", None), ini_cfg.get("d2o_percent"), 0.0),
         
         # Amino acid selection
         "deuteration_vector": deuteration_vector,
         
         # Metadata
         "config_file": getattr(cli_args, "config", None),
-        "verbose": cli_args.verbose
+        "verbose": getattr(cli_args, "verbose", False)
     }
+
+
+class _BatchCliArgs:
+    """Lightweight namespace compatible with ``merge_config`` for batch callers."""
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+def build_batch_config(
+    input_pdb: str,
+    output_pdb: str,
+    d2o_percent: float,
+    all_aa: bool = False,
+    amino_acids: Optional[List[str]] = None,
+    config_path: Optional[str] = None,
+    verbose: bool = False,
+) -> Dict[str, Any]:
+    """
+    Build and validate a deuteration configuration dict for direct Python usage.
+
+    This helper is intended for batch workflows such as looping over a directory
+    of PDB files. It does not touch ``sys.argv`` and does not call ``sys.exit()``.
+
+    Args:
+        input_pdb:       Source PDB path.
+        output_pdb:      Destination PDB path.
+        d2o_percent:     D2O percentage (0-100). Floats are accepted.
+        all_aa:          Deuterate all standard amino acids when True.
+        amino_acids:     List of 3-letter AA codes to deuterate.
+        config_path:     Optional INI configuration file.
+        verbose:         Enable debug logging when True.
+
+    Returns:
+        Validated configuration dictionary.
+    """
+    aa_list = [aa.strip().upper() for aa in (amino_acids or []) if aa.strip()]
+    valid_codes = {aa.code_3 for aa in AMINO_ACIDS}
+    for code in aa_list:
+        if code not in valid_codes:
+            raise ValueError(
+                f"Invalid amino acid code: {code}. "
+                f"Valid codes: {', '.join(sorted(valid_codes))}"
+            )
+
+    ini_cfg = load_config_ini(config_path) if config_path else {}
+
+    cli_args = argparse.Namespace(
+        input_pdb=input_pdb,
+        output_pdb=output_pdb,
+        d2o_percent=d2o_percent,
+        all=all_aa,
+        verbose=verbose,
+        config=config_path,
+        **{aa.code_3: (all_aa or aa.code_3 in aa_list) for aa in AMINO_ACIDS},
+    )
+    config = merge_config(cli_args, ini_cfg)
+    validate_config(config)
+    return config
 
 
 # ============================================================================
@@ -610,7 +671,7 @@ class PdbDeuteration:
 
     def apply_deuteration(self,
                           deuteration_vector: List[bool],
-                          d2o_percent: int = 0) -> None:
+                          d2o_percent: float = 0) -> None:
         """
         Apply deuteration to the PDB structure.
 
@@ -791,6 +852,62 @@ class PdbDeuteration:
 #                           MAIN EXECUTION
 # ============================================================================
 
+def deuterate_file(
+    input_pdb: str,
+    output_pdb: str,
+    d2o_percent: float,
+    deuteration_vector: List[bool],
+    verbose: bool = False,
+) -> bool:
+    """
+    Apply deuteration to a single PDB file.
+
+    This is the reusable core formerly embedded in ``main()``. It does not
+    touch ``sys.argv`` and does not call ``sys.exit()``, so it can be called
+    from other Python code such as the CLI batch handler.
+
+    Args:
+        input_pdb:       Source PDB path.
+        output_pdb:      Destination PDB path. Parent folders are created
+                         automatically.
+        d2o_percent:     D2O percentage for labile hydrogen exchange (0-100).
+        deuteration_vector: 20 booleans aligned with AMINO_ACIDS.
+        verbose:         Enable debug logging when True.
+
+    Returns:
+        ``True`` on success, ``False`` on failure.
+    """
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+
+    try:
+        deuterator = PdbDeuteration(input_pdb)
+
+        logger.info("--- Protein composition ---")
+        total_res = sum(deuterator.aa_count.values())
+        logger.info(f"Total residues : {total_res}")
+        if deuterator.missing_aa:
+            logger.info(f"Absent AAs     : {', '.join(deuterator.missing_aa)}")
+
+        deuterator.apply_deuteration(deuteration_vector, d2o_percent)
+        print(f"Total Atoms               : {deuterator.stats['total_atoms']}")
+        print(f"Hydrogen atoms            : {deuterator.stats['hydrogen_atoms']}")
+        print(f"Labile Hydrogen atoms     : {deuterator.stats['labile_H']}")
+        print(f"Non Labile Hydrogen atoms : {deuterator.stats['non_labile_H']}")
+        print(f"Deuterium atoms           : {deuterator.stats['deuterium_atoms']}")
+        print(f"Labile Deuterium atoms    : {deuterator.stats['labile_D']}")
+        print(f"Non Labile Deuterium atoms: {deuterator.stats['non_labile_D']}")
+
+        Path(output_pdb).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+        deuterator.save(output_pdb)
+    except (FileNotFoundError, RuntimeError, IOError, ValueError) as e:
+        logger.error(f"Deuteration failed: {e}")
+        return False
+
+    logger.info("Deuteration completed successfully!")
+    return True
+
+
 def main():
     """Main entry point for standalone usage."""
     # Parse command line arguments
@@ -821,37 +938,22 @@ def main():
     logger.info(f"Input PDB:  {config['input_pdb']}")
     logger.info(f"Output PDB: {config['output_pdb']}")
     logger.info(f"D2O:        {config['d2o_percent']:.2f}%")
-    
+
     deuterated_count = sum(config['deuteration_vector'])
     logger.info(f"Amino acids: {deuterated_count}/20 selected for deuteration")
-    
+
     if config['config_file']:
         logger.info(f"Config file: {config['config_file']}")
     logger.info("=" * 60)
 
-    # Load and deuterate
-    try:
-        deuterator = PdbDeuteration(config['input_pdb'])
-
-        # Report composition stats from the unmodified structure
-        logger.info("--- Protein composition ---")
-        total_res = sum(deuterator.aa_count.values())
-        logger.info(f"Total residues : {total_res}")
-        if deuterator.missing_aa:
-            logger.info(f"Absent AAs     : {', '.join(deuterator.missing_aa)}")
-
-        deuterator.apply_deuteration(config['deuteration_vector'], config['d2o_percent'])
-        print(f"Total Atoms               : {deuterator.stats['total_atoms']}")
-        print(f"Hydrogen atoms            : {deuterator.stats['hydrogen_atoms']}")
-        print(f"Labile Hydrogen atoms     : {deuterator.stats['labile_H']}")
-        print(f"Non Labile Hydrogen atoms : {deuterator.stats['non_labile_H']}")
-        print(f"Deuterium atoms           : {deuterator.stats['deuterium_atoms']}")
-        print(f"Labile Deuterium atoms    : {deuterator.stats['labile_D']}")
-        print(f"Non Labile Deuterium atoms: {deuterator.stats['non_labile_D']}")
-
-        deuterator.save(config['output_pdb'])
-    except (FileNotFoundError, RuntimeError, IOError, ValueError) as e:
-        logger.error(f"Deuteration failed: {e}")
+    success = deuterate_file(
+        input_pdb=config['input_pdb'],
+        output_pdb=config['output_pdb'],
+        d2o_percent=config['d2o_percent'],
+        deuteration_vector=config['deuteration_vector'],
+        verbose=config['verbose'],
+    )
+    if not success:
         sys.exit(1)
 
     logger.info("=" * 60)

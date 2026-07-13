@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """OptiSANS — Unified CLI for protein deuteration optimization for SANS."""
 
-import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -268,16 +267,16 @@ def run(
 
 @app.command()
 def deuterate(
-    pdb_file: Path = typer.Argument(
+    source: Path = typer.Argument(
         ...,
         exists=True,
-        help="Input PDB file.",
+        help="Input PDB file or directory containing PDB files.",
     ),
     output: Path = typer.Option(
         ...,
         "-o",
         "--output",
-        help="Output PDB file.",
+        help="Output PDB file or output directory when processing a folder.",
     ),
     d2o: float = typer.Option(
         0.0,
@@ -315,7 +314,7 @@ def deuterate(
         ),
     ),
 ):
-    """Deuterate a single PDB file according to a given specification."""
+    """Deuterate one or more PDB files according to a given specification."""
     import re as _re
 
     aa_list: List[str] = []
@@ -323,28 +322,111 @@ def deuterate(
         aa_list = [
             x.strip().upper() for x in _re.split(r"[,\s]+", amino_acids) if x.strip()
         ]
-    argv = ["pdb_deuteration"]
+    if all_aa:
+        aa_list = [aa.code_3 for aa in VALID_AA]
+
+    for aa in aa_list:
+        if aa not in VALID_AA:
+            typer.echo(f"Error: invalid amino acid code: {aa}", err=True)
+            typer.echo(
+                f"Valid codes: {', '.join(sorted(VALID_AA))}",
+                err=True,
+            )
+            raise typer.Exit(1)
+
     if config is not None:
-        argv += [str(config)]
+        try:
+            from pdb_deuteration import load_config_ini, merge_config, validate_config
+            ini_cfg = load_config_ini(str(config))
+        except (FileNotFoundError, ValueError) as exc:
+            typer.echo(f"Error loading config file: {exc}", err=True)
+            raise typer.Exit(1)
+    else:
+        ini_cfg = {}
+
+    if source.is_dir():
+        pdb_files = sorted(p.name for p in source.iterdir() if p.is_file() and p.suffix.lower() == ".pdb")
+        if not pdb_files:
+            typer.echo(f"No .pdb files found in directory: {source}", err=True)
+            raise typer.Exit(1)
+        if not output.exists():
+            output.mkdir(parents=True, exist_ok=True)
+        if not output.is_dir():
+            typer.echo(
+                "When SOURCE is a directory, --output must be a directory.",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        typer.echo(f"Processing {len(pdb_files)} PDB files from: {source}")
+        typer.echo(f"Output directory: {output}")
+
+        ok = 0
+        ko = 0
+        for idx, name in enumerate(pdb_files, start=1):
+            in_path = source / name
+            out_path = output / name
+
+            try:
+                from pdb_deuteration import build_batch_config, deuterate_file
+            except ImportError as exc:
+                typer.echo(f"Import error: {exc}", err=True)
+                raise typer.Exit(1)
+
+            try:
+                cfg = build_batch_config(
+                    input_pdb=str(in_path),
+                    output_pdb=str(out_path),
+                    d2o_percent=d2o,
+                    all_aa=all_aa,
+                    amino_acids=aa_list or None,
+                    config_path=str(config) if config else None,
+                    verbose=verbose,
+                )
+            except ValueError as exc:
+                typer.echo(f"[{idx}/{len(pdb_files)}] Invalid config for {name}: {exc}", err=True)
+                ko += 1
+                continue
+
+            typer.echo(f"[{idx}/{len(pdb_files)}] Deuterating {name} ...")
+            success = deuterate_file(
+                input_pdb=cfg["input_pdb"],
+                output_pdb=cfg["output_pdb"],
+                d2o_percent=cfg["d2o_percent"],
+                deuteration_vector=cfg["deuteration_vector"],
+                verbose=cfg["verbose"],
+            )
+            if success:
+                ok += 1
+            else:
+                ko += 1
+
+        typer.echo(f"Done. succeeded={ok}, failed={ko} out of {len(pdb_files)} files.")
+        if ko:
+            raise typer.Exit(1)
+        return
+
+    single_input = source
+    if output.exists() and output.is_dir():
+        single_output = output / source.name
+    else:
+        single_output = output
+
+    argv = ["pdb_deuteration"]
     argv += [
         "-i",
-        str(pdb_file),
+        str(single_input),
         "-o",
-        str(output),
+        str(single_output),
         "--d2o",
         str(d2o),
     ]
+    if config is not None:
+        argv += [str(config)]
     if all_aa:
         argv.append("--all")
     elif aa_list:
         for aa in aa_list:
-            if aa not in VALID_AA:
-                typer.echo(f"Error: invalid amino acid code: {aa}", err=True)
-                typer.echo(
-                    f"Valid codes: {', '.join(sorted(VALID_AA))}",
-                    err=True,
-                )
-                raise typer.Exit(1)
             argv.append(f"--{aa}")
     if verbose:
         argv.append("--verbose")
@@ -361,51 +443,6 @@ def deuterate(
         )
         raise typer.Exit(1)
     deut_main()
-
-
-@app.command()
-def batch(
-    pdb_files: List[Path] = typer.Argument(
-        ...,
-        exists=True,
-        help="PDB files to process (one or more).",
-    ),
-    config: Optional[Path] = typer.Option(
-        None,
-        "--config",
-        exists=True,
-        help="config.ini file for GA parameters.",
-    ),
-    batch_script: Path = typer.Option(
-        Path("run_convergence_simulation_multiprotein.sh"),
-        "--batch-script",
-        help="Path to run_convergence_simulation_multiprotein.sh.",
-    ),
-):
-    """Run GA simulations across multiple proteins (convergence study).
-
-    Seeds are defined inside run_convergence_simulation_multiprotein.sh.
-    To use different seeds, edit the SEEDS variable in that script or pass
-    --config with an appropriate config.ini file.
-    """
-    for pdb in pdb_files:
-        if not pdb.exists():
-            typer.echo(f"Error: PDB file not found: {pdb}", err=True)
-            raise typer.Exit(1)
-
-    if not batch_script.exists():
-        typer.echo(f"Error: batch script not found: {batch_script}", err=True)
-        raise typer.Exit(1)
-
-    cmd = ["bash", str(batch_script)]
-    if config is not None:
-        cmd += ["--config", str(config)]
-    cmd += [str(p) for p in pdb_files]
-
-    typer.echo(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        raise typer.Exit(result.returncode)
 
 
 @app.command()
@@ -609,105 +646,6 @@ def recycle(
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
-
-
-@app.command()
-def plot(
-    directory: Path = typer.Argument(
-        ...,
-        exists=True,
-        dir_okay=True,
-        help="Results directory (must contain best_fitness_summary.csv and "
-        "generation_XX_summary.txt files).",
-    ),
-    output: Optional[Path] = typer.Option(
-        None,
-        "-o",
-        "--output",
-        help="Output path for the fitness plot "
-        "(default: Fitness_evolution.png inside the directory).",
-    ),
-    annotate: bool = typer.Option(
-        False,
-        "--annotate",
-        help="Add a colour grid of deuterated AAs below the fitness plot.",
-    ),
-    show_min: bool = typer.Option(
-        False,
-        "--min",
-        help="With --annotate: show stat values only on change and at last column.",
-    ),
-    fitness_only: bool = typer.Option(
-        False,
-        "--fitness-only",
-        help="Generate only the fitness evolution plot (skip D2O scatter plots).",
-    ),
-    scatter_only: bool = typer.Option(
-        False,
-        "--scatter-only",
-        help="Generate only the D2O vs %D scatter plots (skip fitness plot).",
-    ),
-    interactive: bool = typer.Option(
-        False,
-        "--interactive",
-        help="Display the fitness plot interactively (matplotlib show).",
-    ),
-):
-    """Generate result plots: fitness evolution and D2O vs %D scatter plots."""
-    if fitness_only and scatter_only:
-        typer.echo(
-            "Error: --fitness-only and --scatter-only are mutually exclusive.",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    # Plot 1: fitness evolution
-    if not scatter_only:
-        csv_file = directory / "best_fitness_summary.csv"
-        if not csv_file.exists():
-            typer.echo(
-                f"Warning: best_fitness_summary.csv not found in {directory}",
-                err=True,
-            )
-        else:
-            argv = ["plot_fitness_evolution", str(csv_file)]
-            if output is not None:
-                argv += ["-o", str(output)]
-            if annotate:
-                argv.append("--annotate")
-            if show_min:
-                argv.append("--min")
-            if interactive:
-                argv.append("--interactive")
-            sys.argv = argv
-            try:
-                from plot_fitness_evolution import main as plot_main
-
-                plot_main()
-            except ImportError as exc:
-                typer.echo(f"Import error: {exc}", err=True)
-                typer.echo(
-                    "Make sure you are running inside the pixi environment: "
-                    "pixi run optisans plot ...",
-                    err=True,
-                )
-                raise typer.Exit(1)
-
-    # Plot 2: D2O vs %D scatter
-    if not fitness_only:
-        sys.argv = ["d2o_vs_d", str(directory)]
-        try:
-            from d2o_vs_d import main as scatter_main
-
-            scatter_main()
-        except ImportError as exc:
-            typer.echo(f"Import error: {exc}", err=True)
-            typer.echo(
-                "Make sure you are running inside the pixi environment: "
-                "pixi run optisans plot ...",
-                err=True,
-            )
-            raise typer.Exit(1)
 
 
 def main():
