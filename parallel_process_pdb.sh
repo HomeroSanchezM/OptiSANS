@@ -2,15 +2,20 @@
 
 # Usage:
 #   Full mode (generation 0): process ALL PDB files in the folder + ref
-#       $0 <deuterated_pdbs_folder> [num_jobs]
+#       $0 <deuterated_pdbs_folder> [num_jobs] [--d2o X.XX]
 #
 #   Incremental mode (generation N > 0): process only the listed files + ref
-#       $0 <deuterated_pdbs_folder> <pdb_list_file> [num_jobs]
+#       $0 <deuterated_pdbs_folder> <pdb_list_file> [num_jobs] [--d2o X.XX]
 #
 #   <pdb_list_file> is a plain text file with one absolute PDB path per line.
 #   When it is supplied the ref/ subfolder is NOT re-processed (outputs already exist).
 #
-# Reference PDB naming conventions for D2O flag selection:
+# D2O flag selection:
+#   --d2o X.XX   use this explicit value for every PDB file
+#   otherwise    extract D2O from the filename pattern:
+#                *_d2o<digits> -> --d2o <digits>/100
+#
+# Reference PDB naming conventions for inferred D2O mode:
 #   *_total_deuteration  -> --d2o 1   (protonated in D2O)
 #   *_total_protonation  -> --d2o 0   (protonated in H2O)
 #   *_d2oXX              -> --d2o XX/100  (any other ref with explicit D2O value)
@@ -20,7 +25,7 @@
 # Check mandatory argument
 # ---------------------------------------------------------------------------
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 <deuterated_pdbs_folder> [pdb_list_file] [num_jobs]"
+    echo "Usage: $0 <deuterated_pdbs_folder> [pdb_list_file] [num_jobs] [--d2o X.XX]"
     exit 1
 fi
 
@@ -29,20 +34,47 @@ SECONDS=0
 input_dir="$1"
 pdb_list_file=""
 num_jobs=150   # default parallel jobs
+explicit_d2o=""
+conc=2.5       # default concentration
+export explicit_d2o conc
 
 # ---------------------------------------------------------------------------
 # Parse optional arguments
 # ---------------------------------------------------------------------------
-if [ $# -ge 2 ]; then
-    if [ -f "$2" ]; then
-        pdb_list_file="$2"
-        if [ $# -ge 3 ] && [[ "$3" =~ ^[0-9]+$ ]]; then
-            num_jobs="$3"
-        fi
-    elif [[ "$2" =~ ^[0-9]+$ ]]; then
-        num_jobs="$2"
-    fi
-fi
+while [ $# -gt 1 ]; do
+    case "$2" in
+        --d2o)
+            if [ -n "$3" ] && [ "$3" != --* ]; then
+                explicit_d2o="$3"
+                export explicit_d2o
+                shift 2
+                continue
+            else
+                echo "Error: --d2o requires a numeric value" >&2
+                exit 1
+            fi
+            ;;
+        --conc)
+            if [ -n "$3" ] && [ "$3" != --* ]; then
+                conc="$3"
+                export conc
+                shift 2
+                continue
+            else
+                echo "Error: --conc requires a numeric value" >&2
+                exit 1
+            fi
+            ;;
+        *)
+            if [ -z "$pdb_list_file" ] && [ -f "$2" ]; then
+                pdb_list_file="$2"
+            elif [ -z "$pdb_list_file" ] && [[ "$2" =~ ^[0-9]+$ ]]; then
+                num_jobs="$2"
+            fi
+            ;;
+    esac
+    shift
+done
 
 # ---------------------------------------------------------------------------
 # Validate input directory
@@ -80,6 +112,10 @@ echo "Input folder:    $input_dir"
 echo "Output folder:   $output_dir"
 echo "Prefix:          $prefix"
 echo "Parallel jobs:   $num_jobs"
+echo "Concentration:   $conc"
+if [ -n "$explicit_d2o" ]; then
+    echo "D2O override:    $explicit_d2o"
+fi
 if [ -n "$pdb_list_file" ]; then
     echo "Mode:            INCREMENTAL (file list: $pdb_list_file)"
 else
@@ -89,10 +125,20 @@ echo ""
 
 # ---------------------------------------------------------------------------
 # Determine the --d2o flag for a reference PDB file.
-# Priority: _total_deuteration > _total_protonation > _d2oXX > (none)
+# Priority order:
+#   1) explicit CLI value --d2o X.XX
+#   2) naming convention:
+#        *_total_deuteration  -> --d2o 1
+#        *_total_protonation  -> --d2o 0
+#        *_d2oXX              -> --d2o XX/100
+#   3) otherwise no flag
 # ---------------------------------------------------------------------------
 _get_ref_d2o_flag() {
     local basename="$1"
+    if [ -n "$explicit_d2o" ]; then
+        echo "--d2o $explicit_d2o"
+        return
+    fi
     if [[ "$basename" == *"_total_deuteration" ]]; then
         echo "--d2o 1"
     elif [[ "$basename" == *"_total_protonation" ]]; then
@@ -119,7 +165,7 @@ process_ref_file() {
 
     echo "Processing ref: $pdb_file -> $output_file (d2o flag: '${d2o_flag:-none}')"
     # shellcheck disable=SC2086
-    ./Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 --conc 2.5 $d2o_flag -o "$output_file"
+    ./Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 --conc "$conc" $d2o_flag -o "$output_file"
 }
 export -f process_ref_file
 
@@ -133,11 +179,12 @@ process_main_file() {
     basename=$(basename "$pdb_file" .pdb)
     output_file="$output_dir/${basename}.dat"
 
-    # Extract D2O value from filename pattern _d2o<digits>
-    if [[ "$basename" =~ _d2o([0-9]+) ]]; then
+    # Use explicit --d2o if provided; otherwise infer from filename.
+    if [ -n "$explicit_d2o" ]; then
+        d2o_flag="--d2o $explicit_d2o"
+    elif [[ "$basename" =~ _d2o([0-9]+) ]]; then
         d2o_int=$((10#${BASH_REMATCH[1]}))
         d2o_value=$(LC_NUMERIC=C awk "BEGIN { printf \"%.2f\", $d2o_int / 100 }")
-
         d2o_flag="--d2o $d2o_value"
     else
         echo "Warning: could not extract d2o value from '$basename', skipping --d2o flag"
@@ -145,7 +192,8 @@ process_main_file() {
     fi
 
     echo "Processing: $pdb_file -> $output_file (d2o flag: '${d2o_flag:-none}')"
-    ./Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 --conc 2.5 $d2o_flag -o "$output_file"
+    # shellcheck disable=SC2086
+    ./Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 --conc "$conc" $d2o_flag -o "$output_file"
 }
 export -f process_main_file
 

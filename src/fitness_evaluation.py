@@ -331,7 +331,7 @@ def ratio_check(I, d2o_percent, ratio_threshold=0.01):
         )
         return 0.0
     if np.max(I) < ratio_threshold:  # discard courves with Imax<0.01
-        logger.warning(f"Imax too low (Imax={np.max(I):.4e}); curve rejected")
+        logger.debug(f"Imax too low (Imax={np.max(I):.4e}); curve rejected")
         return 0.0
     ratio = np.max(I) / background
     logger.debug(

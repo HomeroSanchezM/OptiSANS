@@ -37,6 +37,7 @@ def recycle_workflow(
     n_jobs: int = 150,
     no_default_ref: bool = False,
     gamma: float = 2,
+    conc: float = 2.5,
 ) -> None:
     """
     Full contrast-variation scan pipeline.
@@ -54,6 +55,7 @@ def recycle_workflow(
         q_max:           q truncation limit for fitness evaluation (A^-1).
         ratio_threshold: Minimum Imax/background ratio to accept a curve.
         n_jobs:          Number of parallel Pepsi-SANS jobs.
+        conc:            Pepsi-SANS concentration passed as --conc.
 
     Raises:
         FileNotFoundError: If pdb_file or batch_script is not found.
@@ -107,7 +109,7 @@ def recycle_workflow(
         logger.info("Skipping default reference PDB generation (--no-default-ref).")
 
     # ---- 5. Run Pepsi-SANS via parallel_process_pdb.sh --------------------
-    _run_pepsi_sans(pdb_dir, batch_script, n_jobs)
+    _run_pepsi_sans(pdb_dir, batch_script, n_jobs, conc=conc)
 
     # ---- 6. Copy pattern reference curve to ref/ --------------------------
     _copy_pattern_reference(pdb_stem, d2o_ref, sans_dir)
@@ -253,25 +255,27 @@ def _run_pepsi_sans(
     pdb_dir: Path,
     batch_script: str,
     n_jobs: int,
+    conc: float = 2.5,
 ) -> None:
     """
     Run Pepsi-SANS in parallel via `parallel_process_pdb.sh`.
 
     The script is called as:
-        parallel_process_pdb.sh <abs_pdb_dir> <n_jobs>
+        parallel_process_pdb.sh <abs_pdb_dir> <n_jobs> --conc <conc>
     and is executed with `cwd` set to the directory that contains the script
     (typically the project root, where `./Pepsi-SANS-Linux/Pepsi-SANS` lives).
     """
     script_path = Path(batch_script).resolve()
     script_cwd = script_path.parent
 
-    cmd = [str(script_path), str(pdb_dir.resolve()), str(n_jobs)]
+    cmd = [str(script_path), str(pdb_dir.resolve()), str(n_jobs), "--conc", str(conc)]
 
     logger.info("=" * 70)
     logger.info("Running Pepsi-SANS simulation …")
     logger.info(f"  Script : {script_path}")
     logger.info(f"  PDB dir: {pdb_dir.resolve()}")
     logger.info(f"  Jobs   : {n_jobs}")
+    logger.info(f"  Conc   : {conc}")
     logger.info("=" * 70)
 
     try:

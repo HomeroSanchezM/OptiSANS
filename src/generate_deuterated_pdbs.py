@@ -153,6 +153,8 @@ def parse_arguments():
                     help='Output directory (default: <pdb_basename>_deuterated_pdbs)')
     io.add_argument('--batch_script', type=str, default='./parallel_process_pdb.sh',
                     help='Path to the batch processing script')
+    io.add_argument('--conc', type=float, default=2.5,
+                    help='Pepsi-SANS concentration passed as --conc (default: 2.5)')
 
     ref = parser.add_argument_group('Reference PDBs')
     ref.add_argument('--no_default_ref', action='store_true',
@@ -273,7 +275,8 @@ def merge_config(cli_args: argparse.Namespace,
 
     return {
         "output_dir":         pick(cli_args.output_dir,  ini_cfg.get("output_dir"),  None),
-        "batch_script":       pick(cli_args.batch_script, ini_cfg.get("batch_script"), "./new_parrallel_process_pdb.sh"),
+        "batch_script":       pick(cli_args.batch_script, ini_cfg.get("batch_script"), "./parallel_process_pdb.sh"),
+        "conc":               pick(getattr(cli_args, "conc", None), ini_cfg.get("conc"), 2.5),
         "population_size":    pick(cli_args.population_size,    ini_cfg.get("population_size"),   120),
         "elitism":            pick(cli_args.elitism,            ini_cfg.get("elitism"),           10),
         "d2o_variation_rate": pick(cli_args.d2o_variation_rate, ini_cfg.get("d2o_variation_rate"),5),
@@ -558,7 +561,8 @@ def generate_pdbs_for_chromosomes(pdb_file: str,
 
 def run_batch_processing(output_dir: Path,
                           batch_script: str,
-                          new_pdb_files: Optional[List[str]] = None) -> str:
+                          new_pdb_files: Optional[List[str]] = None,
+                          conc: float = 2.5) -> str:
     """
     Execute the external batch script for Pepsi-SANS simulation.
 
@@ -567,12 +571,13 @@ def run_batch_processing(output_dir: Path,
         batch_script:  Path to the shell script.
         new_pdb_files: If given, only these files are simulated (incremental).
                        If None, all PDB files in output_dir are processed.
+        conc:          Pepsi-SANS concentration to pass as --conc.
 
     Returns:
         Absolute path (string) to the primus_out directory.
     """
     logger.info("=" * 70)
-    logger.info(">>> Running Pepsi-SANS simulation…")
+    logger.info(">> Running Pepsi-SANS simulation…")
     logger.info("=" * 70)
 
     tmp_list_file: Optional[str] = None
@@ -582,10 +587,10 @@ def run_batch_processing(output_dir: Path,
             with os.fdopen(fd, 'w') as fh:
                 for p in new_pdb_files:
                     fh.write(p + "\n")
-            cmd = [batch_script, str(output_dir), tmp_list_file]
+            cmd = [batch_script, str(output_dir), tmp_list_file, "--conc", str(conc)]
             logger.info(f"  Incremental mode: {len(new_pdb_files)} new file(s)")
         else:
-            cmd = [batch_script, str(output_dir)]
+            cmd = [batch_script, str(output_dir), "--conc", str(conc)]
             logger.info("  Full mode: all PDB files in output directory")
 
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -1114,7 +1119,7 @@ def main():
 
     population = generator.generate_initial_population(generation=0)
     generate_pdbs_for_chromosomes(str(pdb_path), population, output_dir)
-    primus_dir = run_batch_processing(output_dir, cfg['batch_script'])
+    primus_dir = run_batch_processing(output_dir, cfg['batch_script'], conc=cfg['conc'])
     evaluate_fitness(primus_dir, population, cfg['q_max'], cfg['ratio_threshold'], gamma=cfg['gamma'])
 
     sorted_indices = get_sorted_indices(population)
@@ -1148,7 +1153,7 @@ def main():
 
         new_pdb_files = generate_pdbs_for_chromosomes(str(pdb_path), tier2_and_3, output_dir)
         primus_dir    = run_batch_processing(output_dir, cfg['batch_script'],
-                                             new_pdb_files=new_pdb_files)
+                                             new_pdb_files=new_pdb_files, conc=cfg['conc'])
 
         evaluate_fitness(primus_dir, new_population, cfg['q_max'], cfg['ratio_threshold'], gamma=cfg['gamma'])
 

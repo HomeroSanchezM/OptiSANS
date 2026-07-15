@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """OptiSANS — Unified CLI for protein deuteration optimization for SANS."""
 
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 
@@ -165,6 +168,11 @@ def run(
         "--batch-script",
         help="Path to parallel_process_pdb.sh.",
     ),
+    conc: float = typer.Option(
+        2.5,
+        "--conc",
+        help="Pepsi-SANS concentration passed as --conc (default: 2.5).",
+    ),
     q_max: Optional[float] = typer.Option(
         None,
         "--q-max",
@@ -236,6 +244,7 @@ def run(
         argv += ["--output_dir", str(output_dir)]
     if batch_script is not None:
         argv += ["--batch_script", str(batch_script)]
+    argv += ["--conc", str(conc)]
     if q_max is not None:
         argv += ["--q-max", str(q_max)]
     if ratio_threshold is not None:
@@ -559,6 +568,11 @@ def recycle(
         "--batch-script",
         help="Path to parallel_process_pdb.sh.",
     ),
+    conc: float = typer.Option(
+        2.5,
+        "--conc",
+        help="Pepsi-SANS concentration passed as --conc (default: 2.5).",
+    ),
     q_max: float = typer.Option(
         0.3,
         "--q-max",
@@ -642,10 +656,75 @@ def recycle(
             n_jobs=n_jobs,
             no_default_ref=no_default_ref,
             gamma=gamma,
+            conc=conc,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
+
+
+@app.command()
+def simulate(
+    source: Path = typer.Argument(
+        ...,
+        exists=True,
+        help="Input PDB file or directory containing PDB files.",
+    ),
+    batch_script: Path = typer.Option(
+        Path("./parallel_process_pdb.sh"),
+        "--batch-script",
+        help="Path to parallel_process_pdb.sh.",
+    ),
+    jobs: int = typer.Option(
+        150,
+        "--jobs",
+        "-j",
+        help="Number of parallel Pepsi-SANS jobs (default 150).",
+    ),
+    conc: float = typer.Option(
+        2.5,
+        "--conc",
+        help="Pepsi-SANS concentration passed as --conc (default: 2.5).",
+    ),
+    d2o: Optional[float] = typer.Option(
+        None,
+        "--d2o",
+        help="Explicit D2O value for all files. If omitted, extracted from filenames.",
+    ),
+):
+    """Run Pepsi-SANS simulations on one or more PDB files.
+
+    D2O values are extracted from filenames by default:
+      *_d2oXX.pdb -> --d2o XX/100
+      *_total_deuteration.pdb -> --d2o 1
+      *_total_protonation.pdb -> --d2o 0
+    """
+    if not batch_script.exists():
+        typer.echo(f"Error: batch script not found: {batch_script}", err=True)
+        raise typer.Exit(1)
+
+    tmp_list_file = None
+    try:
+        if source.is_dir():
+            pdb_dir = source.resolve()
+            cmd = [str(batch_script.resolve()), str(pdb_dir), str(jobs), "--conc", str(conc)]
+        else:
+            pdb_dir = source.parent.resolve()
+            fd, tmp_list_file = tempfile.mkstemp(suffix=".txt", prefix="pdb_list_")
+            with os.fdopen(fd, "w") as fh:
+                fh.write(str(source.resolve()) + "\n")
+            cmd = [str(batch_script.resolve()), str(pdb_dir), tmp_list_file, str(jobs), "--conc", str(conc)]
+
+        if d2o is not None:
+            cmd += ["--d2o", str(d2o)]
+
+        typer.echo(f"Running: {' '.join(cmd)}")
+        result = subprocess.run(cmd, cwd=str(batch_script.parent.resolve()))
+        if result.returncode != 0:
+            raise typer.Exit(result.returncode)
+    finally:
+        if tmp_list_file and os.path.exists(tmp_list_file):
+            os.unlink(tmp_list_file)
 
 
 def main():
