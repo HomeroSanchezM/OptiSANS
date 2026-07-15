@@ -115,7 +115,7 @@ def recycle_workflow(
     _copy_pattern_reference(pdb_stem, d2o_ref, sans_dir)
 
     # ---- 7. Fitness evaluation → result.csv --------------------------------
-    csv_path = _run_fitness_evaluation(sans_dir, q_max, ratio_threshold)
+    csv_path = _run_fitness_evaluation(sans_dir, q_max, ratio_threshold,gamma)
 
     # ---- 8. Plot 1: fitness vs D2O% ----------------------------------------
     _plot_fitness(csv_path, sans_dir)
