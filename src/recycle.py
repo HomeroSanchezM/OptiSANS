@@ -332,6 +332,7 @@ def _run_fitness_evaluation(
     sans_dir: Path,
     q_max: float,
     ratio_threshold: float,
+    gamma: float,
 ) -> Path:
     """
     Evaluate fitness for all .dat files in sans_dir against the 3 reference
