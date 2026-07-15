@@ -29,7 +29,7 @@ def recycle_workflow(
     pdb_file: str,
     d2o_ref: int,
     amino_acids: List[str],
-    output_dir: Optional[str] = None,
+    output_dir: Optional[str] = "./",
     batch_script: str = "./parallel_process_pdb.sh",
     d2o_step: int = 1,
     q_max: float = 0.3,
