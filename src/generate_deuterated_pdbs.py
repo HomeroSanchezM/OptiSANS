@@ -23,6 +23,7 @@ import os
 import sys
 import argparse
 import random
+import re
 import logging
 import subprocess
 import configparser
@@ -34,19 +35,30 @@ from typing import List, Dict, Any, Optional, Set
 
 import numpy as np
 
-from GA import (
+from src.aa import (
+    AA_GROUP_INDEX,
     AMINO_ACIDS,
     EFFECTIVE_AMINO_ACIDS,       # 18 effective genes
+    LINKED_AA_GROUPS,
     N_EFFECTIVE_AA,
-    AA_GROUP_INDEX,          
     expand_deuteration_vector,
     merge_restrictions_to_18,
-    Chromosome,
-    PopulationGenerator,
+    restrict_linked_codes,
     restrictions as default_restrictions,
 )
-from pdb_deuteration import PdbDeuteration
-from fitness_evaluation import evaluate_population_fitness
+from src.GA import (
+    Chromosome,
+    PopulationGenerator,
+)
+from src.deuteration import (
+    apply_stats_to_chromosome,
+    build_template,
+    composition_stats,
+    deuterate_chromosome,
+    deuterate_codes,
+    load_policy_and_options,
+)
+from src.fitness_evaluation import evaluate_population_fitness
 
 # ============================================================================
 #                           LOGGING CONFIGURATION
@@ -195,6 +207,18 @@ def parse_arguments():
     fit.add_argument('--deut-ref', type=str, help=argparse.SUPPRESS)  # deprecated
     fit.add_argument('--prot-ref', type=str, help=argparse.SUPPRESS)  # deprecated
 
+    # ---- Deuteration restrictions (linked pairs stay linked) ----
+    restr = parser.add_argument_group('Deuteration restrictions')
+    restr.add_argument(
+        '--restriction', action='append', default=None, metavar='AA',
+        help=(
+            'Restrict (forbid) the deuteration of one or more amino-acid types, '
+            'given as 3-letter codes. Repeatable, and space- or comma-separated. '
+            'Linked pairs are always restricted together: --restriction ASN also '
+            'restricts ASP (a warning is printed).'
+        ),
+    )
+
     parser.add_argument('--verbose', action='store_true')
 
     args = parser.parse_args()
@@ -265,6 +289,49 @@ def load_config_ini(path: str) -> Dict[str, Any]:
     return cfg
 
 
+def _merge_cli_restrictions(
+    restrictions_18: List[bool],
+    cli_restriction: Optional[List[str]],
+) -> List[bool]:
+    """Apply ``--restriction`` codes to an 18-gene restriction vector.
+
+    Restrictions use the linked-pair rule: restricting ASN also restricts ASP
+    (and GLU/GLN), with a warning printed for each pair touched.
+    """
+    if not cli_restriction:
+        return restrictions_18
+
+    codes: List[str] = []
+    for item in cli_restriction:
+        codes.extend(code for code in re.split(r"[,\s]+", item) if code)
+    if not codes:
+        return restrictions_18
+
+    from src.aa import AA_GROUP_INDEX
+
+    for code in codes:
+        if code.upper() not in AA_GROUP_INDEX:
+            raise ValueError(
+                f"Unknown amino acid code in --restriction: {code!r} "
+                f"(valid codes: {', '.join(sorted(AA_GROUP_INDEX))})"
+            )
+
+    updated, pairs = restrict_linked_codes(restrictions_18, codes)
+    for given, partner in pairs:
+        logger.info(
+            f"  restriction {given.upper()} : {given.upper()} est lié à {partner} "
+            f"(paire ASN+ASP / GLU+GLN), les deux seront restreints"
+        )
+    from src.aa import expand_linked_codes
+
+    expanded, _ = expand_linked_codes(codes)
+    logger.info(
+        f"  restricted amino-acid types: {', '.join(sorted(expanded))} "
+        f"(paires liées incluses)"
+    )
+    return updated
+
+
 def merge_config(cli_args: argparse.Namespace,
                  ini_cfg: Optional[Dict] = None) -> Dict[str, Any]:
     """Merge CLI arguments with INI configuration (CLI takes precedence)."""
@@ -286,7 +353,14 @@ def merge_config(cli_args: argparse.Namespace,
         "q_max":              pick(cli_args.q_max,            ini_cfg.get("q_max"),            0.3),
         "ratio_threshold":    pick(cli_args.ratio_threshold,  ini_cfg.get("ratio_threshold"),  0.01),
         "gamma":              pick(cli_args.gamma,            ini_cfg.get("gamma"),            2),
-        "restrictions":       ini_cfg.get("restrictions", [True] * N_EFFECTIVE_AA),
+        # Read from [GENETIC] for the archived config; the GA loop does not use
+        # them (the mutation/crossover rates are internal to PopulationGenerator).
+        "mutation_rate":      ini_cfg.get("mutation_rate"),
+        "crossover_rate":     ini_cfg.get("crossover_rate"),
+        "restrictions":       _merge_cli_restrictions(
+            ini_cfg.get("restrictions", [True] * N_EFFECTIVE_AA),
+            getattr(cli_args, "restriction", None),
+        ),
         "d2o":                pick(getattr(cli_args, 'd2o', None), ini_cfg.get("d2o"), None),
         # Reference options
         "no_default_ref":     cli_args.no_default_ref,
@@ -392,12 +466,12 @@ def apply_missing_aa_to_restrictions(restrictions: List[bool],
     Args:
         restrictions: 18-element effective-gene restriction list.
         missing_aa:   List of 3-letter codes absent from the protein
-                      (from PdbDeuteration.missing_aa).
+                      (from the DeuterPDB template composition).
 
     Returns:
         New 18-element list with absent-AA genes disabled.
     """
-    from GA import LINKED_AA_GROUPS
+    from src.aa import LINKED_AA_GROUPS
 
     updated = list(restrictions)
     missing_set = set(missing_aa)
@@ -414,9 +488,13 @@ def apply_missing_aa_to_restrictions(restrictions: List[bool],
     return updated
 
 
-def generate_protein_plots(pdb_analyzer: PdbDeuteration,
+def generate_protein_plots(composition: Dict[str, Any],
                             plot_dir: Path) -> None:
-    """Generate and save two barplot PNGs (residue counts + H counts)."""
+    """Generate and save two barplot PNGs (residue counts + H counts).
+
+    *composition* is the dict returned by ``src.deuteration.composition_stats``
+    (keys: aa_count, aa_hydrogen_count, missing_aa).
+    """
     try:
         import matplotlib
         matplotlib.use('Agg')
@@ -435,7 +513,7 @@ def generate_protein_plots(pdb_analyzer: PdbDeuteration,
     labels_rev = labels[::-1]
 
     # Plot 1: AA residue counts
-    values_count = [pdb_analyzer.aa_count.get(code, 0) for code in codes_rev]
+    values_count = [composition["aa_count"].get(code, 0) for code in codes_rev]
 
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.barh(labels_rev, values_count, color='steelblue')
@@ -456,7 +534,7 @@ def generate_protein_plots(pdb_analyzer: PdbDeuteration,
     logger.info(f"  Plot saved : {out_count.name}")
 
     # Plot 2: H atoms per AA type
-    values_h = [pdb_analyzer.aa_hydrogen_count.get(code, 0) for code in codes_rev]
+    values_h = [composition["aa_hydrogen_count"].get(code, 0) for code in codes_rev]
 
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.barh(labels_rev, values_h, color='darkorange')
@@ -480,29 +558,29 @@ def generate_protein_plots(pdb_analyzer: PdbDeuteration,
 #                       PDB GENERATION
 # ============================================================================
 
-def create_protonated_reference_pdbs(pdb_file: str,
+def create_protonated_reference_pdbs(template,
+                                      pdb_stem: str,
                                       ref_dir: Path,
-                                      restrictions: List[bool]) -> None:
+                                      run_seed: int) -> None:
     """
-    Create the two default reference PDB files:
-      - protonated protein in D2O  (all labile H exchanged via d2o=100)
-      - protonated protein in H2O  (no deuteration, d2o=0)
+    Create the two default reference PDB files (no amino-acid deuteration):
+
+      - {stem}_total_deuteration.pdb  (D2O = 100 %, all labile H exchanged)
+      - {stem}_total_protonation.pdb  (D2O = 0 %,  no exchange)
+
+    Both are produced from the same reusable DeuterPDB template with an empty
+    selection, so only the labile hydrogens are affected.
     """
     logger.info(">>> Creating default reference PDBs (protonated in D2O / H2O)")
-    ref_deut_vector = [False] * len(AMINO_ACIDS)
 
-    # Protonated in D2O (all labile H exchanged)
-    deut_pdb  = PdbDeuteration(pdb_file)
-    deut_pdb.apply_deuteration(ref_deut_vector, d2o_percent=100)
-    deut_path = ref_dir / f"{Path(pdb_file).stem}_total_deuteration.pdb"
-    deut_pdb.save(str(deut_path))
+    deut = deuterate_codes(template, codes=[], d2o=100, seed=run_seed)
+    deut_path = ref_dir / f"{pdb_stem}_total_deuteration.pdb"
+    deut.write_pdb(str(deut_path))
     logger.info(f"  Deuteration reference : {deut_path.name}")
 
-    # Protonated in H2O (all H, no exchange)
-    prot_pdb  = PdbDeuteration(pdb_file)
-    prot_pdb.apply_deuteration(ref_deut_vector, d2o_percent=0)
-    prot_path = ref_dir / f"{Path(pdb_file).stem}_total_protonation.pdb"
-    prot_pdb.save(str(prot_path))
+    prot = deuterate_codes(template, codes=[], d2o=0, seed=run_seed)
+    prot_path = ref_dir / f"{pdb_stem}_total_protonation.pdb"
+    prot.write_pdb(str(prot_path))
     logger.info(f"  Protonation reference : {prot_path.name}")
 
 
@@ -519,16 +597,22 @@ def copy_user_reference_pdbs(ref_paths: List[str], ref_dir: Path) -> None:
         logger.info(f"  Copied: {src_path.name}")
 
 
-def generate_pdbs_for_chromosomes(pdb_file: str,
+def generate_pdbs_for_chromosomes(template,
                                    chromosomes: List[Chromosome],
-                                   output_dir: Path) -> List[str]:
+                                   output_dir: Path,
+                                   run_seed: int,
+                                   collect_trace: bool = False) -> List[str]:
     """
     Generate one deuterated PDB file per chromosome.
 
-    Each chromosome carries an 18-element deuteration vector.  Before passing
-    it to PdbDeuteration, we expand it to the 20-element canonical vector so
-    that both amino acids in each linked pair (ASN+ASP, GLU+GLN) are
-    deuterated when their shared gene is True.
+    Each chromosome carries an 18-element deuteration vector, translated into a
+    DeuterPDB ``Selection`` by the adapter: linked pairs (ASN+ASP, GLU+GLN)
+    always deuterate together because they share one gene.
+
+    The template is built once per run by the caller and reused here for every
+    chromosome (no repeated PDB parsing).  Deuteration is deterministic: the
+    per-chromosome seed is derived from ``run_seed``, the pattern and the D2O
+    value, so two runs with the same configuration produce identical PDBs.
     """
     logger.info(f"Generating {len(chromosomes)} deuterated PDB file(s)…")
     generated = []
@@ -537,15 +621,16 @@ def generate_pdbs_for_chromosomes(pdb_file: str,
         filename = get_pdb_filename(chrom)
         out_path = output_dir / filename
 
-        deut_vector_20 = expand_deuteration_vector(chrom.deuteration)
-
         try:
-            deuterator = PdbDeuteration(pdb_file)
-            deuterator.apply_deuteration(deut_vector_20, chrom.d2o)     # 20-element
-            chrom.H           = deuterator.stats['hydrogen_atoms']
-            chrom.D           = deuterator.stats['deuterium_atoms']
-            chrom.non_labile_D = deuterator.stats['non_labile_D']
-            deuterator.save(str(out_path))
+            result = deuterate_chromosome(
+                template,
+                chrom.deuteration,
+                chrom.d2o,
+                run_seed,
+                collect_trace=collect_trace,
+            )
+            apply_stats_to_chromosome(chrom, result)
+            result.write_pdb(str(out_path))
             generated.append(str(out_path))
             logger.debug(f"  Written: {filename}")
         except Exception as exc:
@@ -922,6 +1007,159 @@ class EarlyStoppingTracker:
 #                       FINAL RESULT FOLDER
 # ============================================================================
 
+def _fmt(value) -> str:
+    """INI-friendly rendering of a scalar value."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def write_effective_config(
+    final_dir: Path,
+    cfg: Dict[str, Any],
+    policy,
+    policy_options: Dict[str, Any],
+    run_seed: int,
+) -> Path:
+    """Archive the configuration actually used by this run in the final folder.
+
+    The file mirrors ``config.ini`` (same sections and keys) but every value is
+    the *effective* one, after the CLI overrides, so a run can be replayed from
+    what is stored next to its results.  The DeuterPDB policy hash, the command
+    line and the run seed are recorded in the header comment.
+    """
+    import datetime as _dt
+
+    # 18-gene restrictions -> one boolean per canonical AA (linked pairs together)
+    restr20 = expand_deuteration_vector(cfg["restrictions"])
+    d2o = cfg.get("d2o")
+
+    L: List[str] = []
+    L.append("# ============================================")
+    L.append("# OptiSANS: effective configuration of this run")
+    L.append("# ============================================")
+    L.append(f"# Generated        : {_dt.datetime.now().isoformat(timespec='seconds')}")
+    L.append(f"# Source PDB       : {cfg.get('pdb_file')}")
+    L.append(f"# Command (argv)   : {' '.join(sys.argv)}")
+    L.append("# Reproduce with   : pixi run optisans run <PDB> <same options>")
+    L.append(f"# Engine           : vendored DeuterPDB (src/deuterpdb)")
+    L.append(f"# Policy hash      : {policy.hash}")
+    L.append(f"# Labile mode      : {policy.get('labile_exchange', 'mode')}"
+             f" | sampling={policy.get('labile_exchange', 'sampling')}"
+             f" | rounding={policy.get('labile_exchange', 'rounding')}")
+    L.append(f"# Protonation      : {policy.get('template', 'protonation')}")
+    L.append(f"# Run seed         : {run_seed} (deuteration seeds derived per chromosome)")
+    L.append("# Values below are the effective ones: CLI > --config > ./config.ini > defaults.")
+    L.append("")
+
+    L.append("[POPULATION]")
+    L.append(f"population_size = {_fmt(cfg['population_size'])}")
+    L.append(f"elitism = {_fmt(cfg['elitism'])}")
+    L.append(f"d2o_variation_rate = {_fmt(cfg['d2o_variation_rate'])}")
+    L.append("")
+
+    L.append("[EXECUTION]")
+    L.append(f"generations = {_fmt(cfg['generations'])}")
+    L.append(f"seed = {_fmt(cfg['seed']) if cfg.get('seed') is not None else ''}")
+    L.append(f"patience = {_fmt(cfg.get('patience'))}")
+    L.append("")
+
+    L.append("[FITNESS]")
+    L.append(f"q_max = {_fmt(cfg['q_max'])}")
+    L.append(f"ratio_threshold = {_fmt(cfg['ratio_threshold'])}")
+    L.append(f"gamma = {_fmt(cfg['gamma'])}")
+    L.append("")
+
+    L.append("[D2O]")
+    L.append(f"d2o = {' '.join(str(v) for v in d2o) if d2o else 'None'}")
+    L.append("")
+
+    L.append("# Pepsi-SANS simulation parameters (used for the fitness evaluation)")
+    L.append("[SIMULATION]")
+    L.append(f"conc = {_fmt(cfg['conc'])}")
+    L.append(f"batch_script = {cfg['batch_script']}")
+    L.append(f"output_dir = {cfg['output_dir']}")
+    if cfg.get("no_default_ref"):
+        L.append("no_default_ref = true")
+    if cfg.get("ref"):
+        L.append(f"extra_refs = {' '.join(str(p) for p in cfg['ref'])}")
+    L.append("")
+
+    L.append("# Restrictions: true = the amino-acid type may be deuterated")
+    L.append("# (linked pairs ASN+ASP and GLU+GLN always share one gene)")
+    L.append("[RESTRICTIONS]")
+    for aa, allowed in zip(AMINO_ACIDS, restr20):
+        L.append(f"{aa.code_3} = {_fmt(allowed)}")
+    L.append("")
+
+    if cfg.get("mutation_rate") is not None or cfg.get("crossover_rate") is not None:
+        L.append("# Read by the INI loader but not used by the GA loop")
+        L.append("# (the rates are internal to PopulationGenerator)")
+        L.append("[GENETIC]")
+        if cfg.get("mutation_rate") is not None:
+            L.append(f"mutation_rate = {_fmt(cfg['mutation_rate'])}")
+        if cfg.get("crossover_rate") is not None:
+            L.append(f"crossover_rate = {_fmt(cfg['crossover_rate'])}")
+        L.append("")
+
+    tmpl = policy.get("template")
+    L.append("[DEUTERPDB]")
+    L.append(f"write_report = {_fmt(policy_options.get('write_report', False))}")
+    L.append(f"write_pdb = {_fmt(policy_options.get('write_pdb', True))}")
+    L.append("")
+
+    L.append("[DEUTERPDB.TEMPLATE]")
+    L.append(f"protonation = {tmpl['protonation']}")
+    if tmpl.get("gmx_path"):
+        L.append(f"gmx_path = {tmpl['gmx_path']}")
+    L.append(f"force_field = {tmpl['force_field']}")
+    L.append(f"strip_water_ligand = {_fmt(tmpl['strip_water_ligand'])}")
+    if tmpl.get("model") is not None:
+        L.append(f"model = {tmpl['model']}")
+    L.append("")
+
+    lab = policy.get("lability")
+    L.append("[DEUTERPDB.LABILITY]")
+    L.append(f"cutoff_angstrom = {_fmt(lab['cutoff_angstrom'])}")
+    L.append(f"ambiguity_tolerance = {_fmt(lab['ambiguity_tolerance'])}")
+    L.append(f"quarantine = {lab['quarantine']}")
+    L.append("")
+
+    acc = policy.get("accessibility")
+    L.append("[DEUTERPDB.ACCESSIBILITY]")
+    for key in ("enabled", "sasa_probe", "sasa_n_points", "threshold_angstrom2",
+                "threshold_mode", "use_hbond_protection", "hbond_max_h_o",
+                "hbond_min_angle"):
+        L.append(f"{key} = {_fmt(acc[key])}")
+    L.append("")
+
+    lx = policy.get("labile_exchange")
+    L.append("[DEUTERPDB.LABILE_EXCHANGE]")
+    L.append(f"mode = {lx['mode']}")
+    L.append("# d2o_percent comes from the chromosome (one value per individual)")
+    L.append(f"sampling = {lx['sampling']}")
+    L.append(f"rounding = {lx['rounding']}")
+    L.append(f"seed = {_fmt(lx['seed']) if lx.get('seed') is not None else ''}")
+    if lx.get("probability_burried") is not None:
+        L.append(f"probability_burried = {_fmt(lx['probability_burried'])}")
+    L.append("")
+
+    kin = lx["kinetic"]
+    L.append("[DEUTERPDB.KINETIC]")
+    L.append(f"accessible_rate = {_fmt(kin['accessible_rate'])}")
+    L.append(f"buried_rate = {_fmt(kin['buried_rate'])}")
+    L.append(f"time_minutes = {_fmt(kin['time_minutes'])}")
+    L.append(f"buried_fraction_source = {kin['buried_fraction_source']}")
+    if kin.get("buried_fraction") is not None:
+        L.append(f"buried_fraction = {_fmt(kin['buried_fraction'])}")
+    L.append("")
+
+    out_path = final_dir / "config.ini"
+    out_path.write_text("\n".join(L), encoding="utf-8")
+    logger.info(f"  Effective config written: {out_path.name}")
+    return out_path
+
+
 def create_final_result_folder(best_chrom, pdb_stem, output_dir,
                                 primus_dir, best_summary_path):
     folder_name  = output_dir.name
@@ -1029,28 +1267,50 @@ def main():
     logger.info("=" * 70)
     logger.info(">>> Analysing protein composition")
     logger.info("=" * 70)
+
+    # DeuterPDB policy: [DEUTERPDB.*] from the --config file, else ./config.ini
+    policy_ini = cfg.get("config_file")
+    if policy_ini is None and Path("config.ini").exists():
+        policy_ini = "config.ini"
     try:
-        pdb_analyzer = PdbDeuteration(str(pdb_path))
-    except (FileNotFoundError, RuntimeError) as exc:
-        logger.error(f"PDB analysis failed: {exc}")
+        policy, policy_options = load_policy_and_options(policy_ini)
+    except Exception as exc:
+        logger.error(f"DeuterPDB configuration error: {exc}")
         sys.exit(1)
 
-    total_residues = sum(pdb_analyzer.aa_count.values())
-    total_h        = sum(pdb_analyzer.aa_hydrogen_count.values())
+    deut_seed = policy.get("labile_exchange", "seed")
+    run_seed = 42 if deut_seed is None else int(deut_seed)
+    logger.info(
+        f"  DeuterPDB policy : {policy.hash}  "
+        f"(mode={policy.get('labile_exchange', 'mode')}, "
+        f"sampling={policy.get('labile_exchange', 'sampling')}, "
+        f"rounding={policy.get('labile_exchange', 'rounding')}, "
+        f"protonation={policy.get('template', 'protonation')}, seed={run_seed})"
+    )
+
+    try:
+        template = build_template(str(pdb_path), policy)
+    except Exception as exc:
+        logger.error(f"DeuterPDB template error: {exc}")
+        sys.exit(1)
+
+    composition = composition_stats(template)
+    total_residues = composition["n_residues"]
+    total_h        = sum(composition["aa_hydrogen_count"].values())
     logger.info(f"  Total residues  : {total_residues}")
     logger.info(f"  Total H atoms   : {total_h}")
 
-    if pdb_analyzer.missing_aa:
+    if composition["missing_aa"]:
         logger.info(
-            f"  Absent AAs ({len(pdb_analyzer.missing_aa)}): "
-            + ", ".join(pdb_analyzer.missing_aa)
+            f"  Absent AAs ({len(composition['missing_aa'])}): "
+            + ", ".join(composition["missing_aa"])
         )
     else:
         logger.info("  All 20 standard amino acid types are present")
 
     # Update restrictions: disable effective genes for fully absent AAs
     cfg['restrictions'] = apply_missing_aa_to_restrictions(
-        cfg['restrictions'], pdb_analyzer.missing_aa
+        cfg['restrictions'], composition["missing_aa"]
     )
 
     # ---------- Display configuration ----------
@@ -1088,11 +1348,11 @@ def main():
     # ---------- Generate protein composition plots ----------
     plot_dir = output_dir / "plot"
     logger.info(">>> Generating protein composition plots")
-    generate_protein_plots(pdb_analyzer, plot_dir)
+    generate_protein_plots(composition, plot_dir)
 
     # Create default references unless --no_default_ref
     if not cfg.get("no_default_ref"):
-        create_protonated_reference_pdbs(str(pdb_path), ref_dir, cfg['restrictions'])
+        create_protonated_reference_pdbs(template, pdb_path.stem, ref_dir, run_seed)
 
     # Copy user-provided reference PDBs
     if cfg.get("ref"):
@@ -1118,7 +1378,7 @@ def main():
     logger.info("=" * 70)
 
     population = generator.generate_initial_population(generation=0)
-    generate_pdbs_for_chromosomes(str(pdb_path), population, output_dir)
+    generate_pdbs_for_chromosomes(template, population, output_dir, run_seed)
     primus_dir = run_batch_processing(output_dir, cfg['batch_script'], conc=cfg['conc'])
     evaluate_fitness(primus_dir, population, cfg['q_max'], cfg['ratio_threshold'], gamma=cfg['gamma'])
 
@@ -1151,7 +1411,7 @@ def main():
 
         cleanup_non_tier1_files(output_dir, primus_dir, tier1)
 
-        new_pdb_files = generate_pdbs_for_chromosomes(str(pdb_path), tier2_and_3, output_dir)
+        new_pdb_files = generate_pdbs_for_chromosomes(template, tier2_and_3, output_dir, run_seed)
         primus_dir    = run_batch_processing(output_dir, cfg['batch_script'],
                                              new_pdb_files=new_pdb_files, conc=cfg['conc'])
 
@@ -1206,12 +1466,22 @@ def main():
     logger.info(f"  %D      : {(best.D / (best.H + best.D))*100:.2f}%")
     logger.info(f"  Fitness : {best.fitness:.4e}")
 
-    create_final_result_folder(
+    final_dir = create_final_result_folder(
         best_chrom=best,
         pdb_stem=pdb_path.stem,
         output_dir=output_dir,
         primus_dir=primus_dir,
         best_summary_path=best_summary_path,
+    )
+
+    # Archive the effective configuration (config.ini + CLI overrides) next to
+    # the results, so the run can be traced and replayed later.
+    write_effective_config(
+        final_dir=final_dir,
+        cfg=cfg,
+        policy=policy,
+        policy_options=policy_options,
+        run_seed=run_seed,
     )
 
 

@@ -38,6 +38,7 @@ def recycle_workflow(
     no_default_ref: bool = False,
     gamma: float = 2,
     conc: float = 2.5,
+    policy_ini: Optional[str] = None,
 ) -> None:
     """
     Full contrast-variation scan pipeline.
@@ -64,6 +65,29 @@ def recycle_workflow(
     """
     # ---- 0. Validate inputs ------------------------------------------------
     _validate_inputs(pdb_file, d2o_ref, amino_acids, batch_script, d2o_step)
+
+    # ---- DeuterPDB policy and reusable template (single parse for the scan) --
+    from src.deuteration import build_template, load_policy_and_options
+
+    try:
+        policy, _options = load_policy_and_options(policy_ini)
+    except Exception as exc:
+        raise RuntimeError(f"DeuterPDB configuration error: {exc}") from exc
+
+    deut_seed = policy.get("labile_exchange", "seed")
+    run_seed = 42 if deut_seed is None else int(deut_seed)
+
+    try:
+        template = build_template(pdb_file, policy)
+    except Exception as exc:
+        raise RuntimeError(f"DeuterPDB template error: {exc}") from exc
+
+    logger.info(
+        f"DeuterPDB policy : {policy.hash}  "
+        f"(mode={policy.get('labile_exchange', 'mode')}, "
+        f"sampling={policy.get('labile_exchange', 'sampling')}, "
+        f"protonation={policy.get('template', 'protonation')}, seed={run_seed})"
+    )
 
     pdb_stem = Path(pdb_file).stem
 
@@ -96,15 +120,15 @@ def recycle_workflow(
     logger.info(f"SANS directory   : {sans_dir.absolute()}")
     logger.info("=" * 70)
 
-    # ---- 2. Build 20-element deuteration vector ----------------------------
-    deuteration_vector = _build_deuteration_vector(amino_acids)
+    # ---- 2. Expand the amino-acid codes (linked pairs stay linked) ---------
+    codes = _expand_amino_acids(amino_acids)
 
     # ---- 3. Generate main PDB files (_d2o0.pdb … _d2o100.pdb) -------------
-    _generate_main_pdbs(pdb_file, deuteration_vector, pdb_dir, d2o_step)
+    _generate_main_pdbs(template, codes, pdb_dir, d2o_step, run_seed)
 
     # ---- 4. Generate reference PDB files -----------------------------------
     if not no_default_ref:
-        _generate_reference_pdbs(pdb_file, pdb_stem, ref_pdb_dir)
+        _generate_reference_pdbs(template, pdb_stem, ref_pdb_dir, run_seed)
     else:
         logger.info("Skipping default reference PDB generation (--no-default-ref).")
 
@@ -145,7 +169,7 @@ def _validate_inputs(
     d2o_step: int,
 ) -> None:
     """Raise clear errors for bad inputs before any expensive work starts."""
-    from pdb_deuteration import AA_INDEX   # local import to keep module lean
+    from src.aa import AA_INDEX   # local import to keep module lean
 
     if not Path(pdb_file).exists():
         raise FileNotFoundError(f"PDB file not found: {pdb_file}")
@@ -173,22 +197,28 @@ def _validate_inputs(
         )
 
 
-def _build_deuteration_vector(amino_acids: List[str]) -> List[bool]:
-    """Build a 20-element deuteration vector from a list of 3-letter AA codes."""
-    from pdb_deuteration import AMINO_ACIDS, AA_INDEX
-    vector = [False] * len(AMINO_ACIDS)
-    for aa_code in amino_acids:
-        idx = AA_INDEX.get(aa_code.upper())
-        if idx is not None:
-            vector[idx] = True
-    return vector
+def _expand_amino_acids(amino_acids: List[str]) -> List[str]:
+    """Expand 3-letter codes so linked pairs stay linked (ASN => ASP, GLU => GLN).
+
+    A warning is printed for every pair completed by the linked rule.
+    """
+    from src.aa import expand_linked_codes
+
+    expanded, pairs = expand_linked_codes(amino_acids)
+    for given, partner in pairs:
+        logger.info(
+            f"  {given} est lié à {partner} (paire ASN+ASP / GLU+GLN) : "
+            f"les deux seront deutérés"
+        )
+    return expanded
 
 
 def _generate_main_pdbs(
-    pdb_file: str,
-    deuteration_vector: List[bool],
+    template,
+    codes: List[str],
     pdb_dir: Path,
     d2o_step: int,
+    run_seed: int,
 ) -> None:
     """
     Generate one deuterated PDB per D2O value in range(0, 101, d2o_step).
@@ -197,7 +227,7 @@ def _generate_main_pdbs(
     `parallel_process_pdb.sh` extracts the D2O integer from the filename with the
     regex `_d2o([0-9]+)` and sets Pepsi-SANS `--d2o XX/100`.
     """
-    from pdb_deuteration import PdbDeuteration
+    from src.deuteration import deuterate_codes, seed_for_codes
 
     d2o_values = list(range(0, 101, d2o_step))
     logger.info(f"Generating {len(d2o_values)} deuterated PDB files in {pdb_dir.name} …")
@@ -205,9 +235,13 @@ def _generate_main_pdbs(
     for d2o in d2o_values:
         out_path = pdb_dir / f"_d2o{d2o}.pdb"
         try:
-            deut = PdbDeuteration(pdb_file)
-            deut.apply_deuteration(deuteration_vector, d2o)
-            deut.save(str(out_path))
+            result = deuterate_codes(
+                template,
+                codes=codes,
+                d2o=d2o,
+                seed=seed_for_codes(run_seed, codes, d2o),
+            )
+            result.write_pdb(str(out_path))
             logger.debug(f"  Written: {out_path.name}")
         except Exception as exc:
             logger.error(f"  FAILED to generate {out_path.name}: {exc}")
@@ -217,9 +251,10 @@ def _generate_main_pdbs(
 
 
 def _generate_reference_pdbs(
-    pdb_file: str,
+    template,
     pdb_stem: str,
     ref_pdb_dir: Path,
+    run_seed: int,
 ) -> None:
     """
     Generate the 2 reference PDB files with NO amino acid deuteration:
@@ -230,24 +265,20 @@ def _generate_reference_pdbs(
     `_total_deuteration` exactly.  `parallel_process_pdb.sh` matches these
     suffixes to set Pepsi-SANS `--d2o 0` and `--d2o 1` respectively.
     """
-    from pdb_deuteration import PdbDeuteration, AMINO_ACIDS
-
-    no_deut = [False] * len(AMINO_ACIDS)
+    from src.deuteration import deuterate_codes
 
     logger.info("Generating 2 reference PDB files in ref/ …")
 
     # Protonated in H2O (D2O = 0)
-    prot = PdbDeuteration(pdb_file)
-    prot.apply_deuteration(no_deut, 0)
+    prot = deuterate_codes(template, codes=[], d2o=0, seed=run_seed)
     prot_path = ref_pdb_dir / f"{pdb_stem}_total_protonation.pdb"
-    prot.save(str(prot_path))
+    prot.write_pdb(str(prot_path))
     logger.info(f"  Protonation ref : {prot_path.name}")
 
     # Protonated in D2O (D2O = 100, all labile H exchanged)
-    deut = PdbDeuteration(pdb_file)
-    deut.apply_deuteration(no_deut, 100)
+    deut = deuterate_codes(template, codes=[], d2o=100, seed=run_seed)
     deut_path = ref_pdb_dir / f"{pdb_stem}_total_deuteration.pdb"
-    deut.save(str(deut_path))
+    deut.write_pdb(str(deut_path))
     logger.info(f"  Deuteration ref : {deut_path.name}")
 
 
@@ -340,7 +371,7 @@ def _run_fitness_evaluation(
 
     Returns the Path to the written CSV file.
     """
-    from fitness_evaluation import evaluate_population_fitness
+    from src.fitness_evaluation import evaluate_population_fitness
 
     logger.info("=" * 70)
     logger.info("Running fitness evaluation …")
@@ -379,7 +410,7 @@ def _run_fitness_evaluation(
 def _plot_fitness(csv_path: Path, sans_dir: Path) -> None:
     """Generate the fitness-vs-D2O% plot and save it next to result.csv."""
     try:
-        from plot_contrast_fitness import plot_fitness_from_csv
+        from src.plot_contrast_fitness import plot_fitness_from_csv
     except ImportError as exc:
         logger.warning(f"Could not import plot_contrast_fitness: {exc}. Skipping fitness plot.")
         return
@@ -400,7 +431,7 @@ def _plot_fitness(csv_path: Path, sans_dir: Path) -> None:
 def _plot_i0(sans_dir: Path) -> None:
     """Generate I(0) vs D2O% plots and save them in sans_dir."""
     try:
-        from plot_i0_d2o import plot_i0_vs_d2o
+        from src.plot_i0_d2o import plot_i0_vs_d2o
     except ImportError as exc:
         logger.warning(f"Could not import plot_i0_d2o: {exc}. Skipping I(0) plots.")
         return

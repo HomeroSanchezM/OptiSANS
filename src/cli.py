@@ -10,10 +10,8 @@ from typing import List, Optional
 
 import typer
 
-# Ensure sibling modules in src/ are importable when running as an entry point.
-_src_dir = str(Path(__file__).resolve().parent)
-if _src_dir not in sys.path:
-    sys.path.insert(0, _src_dir)
+# Single source for the amino-acid tables (see src/aa.py).
+from src.aa import AA_DICT, AMINO_ACIDS
 
 
 app = typer.Typer(
@@ -45,60 +43,17 @@ def _banner(ctx: typer.Context) -> None:
         typer.echo(ctx.get_help())
 
 
-VALID_AA = {
-    "ALA",
-    "ARG",
-    "ASN",
-    "ASP",
-    "CYS",
-    "GLU",
-    "GLN",
-    "GLY",
-    "HIS",
-    "ILE",
-    "LEU",
-    "LYS",
-    "MET",
-    "PHE",
-    "PRO",
-    "SER",
-    "THR",
-    "TRP",
-    "TYR",
-    "VAL",
-}
+VALID_AA = {aa.code_3 for aa in AMINO_ACIDS}
 
 
 @app.command()
 def aa():
     """Affiche la liste des 20 acides aminés standards avec leurs codes."""
-    AA_TABLE = [
-        ("ALA", "A", "Alanine"),
-        ("ARG", "R", "Arginine"),
-        ("ASN", "N", "Asparagine"),
-        ("ASP", "D", "Aspartic acid"),
-        ("CYS", "C", "Cysteine"),
-        ("GLU", "E", "Glutamic acid"),
-        ("GLN", "Q", "Glutamine"),
-        ("GLY", "G", "Glycine"),
-        ("HIS", "H", "Histidine"),
-        ("ILE", "I", "Isoleucine"),
-        ("LEU", "L", "Leucine"),
-        ("LYS", "K", "Lysine"),
-        ("MET", "M", "Methionine"),
-        ("PHE", "F", "Phenylalanine"),
-        ("PRO", "P", "Proline"),
-        ("SER", "S", "Serine"),
-        ("THR", "T", "Threonine"),
-        ("TRP", "W", "Tryptophan"),
-        ("TYR", "Y", "Tyrosine"),
-        ("VAL", "V", "Valine"),
-    ]
     typer.echo("\n Amino acids available for deuteration\n")
     typer.echo(f"  {'Code 3':<10} {'Code 1':<10} {'Name'}")
     typer.echo("  " + "─" * 38)
-    for code3, code1, name in AA_TABLE:
-        typer.echo(f"  {code3:<10} {code1:<10} {name}")
+    for aa in AMINO_ACIDS:
+        typer.echo(f"  {aa.code_3:<10} {aa.code_1:<10} {aa.name}")
     typer.echo("")
     typer.echo(
         "  Usage : --aa 'LEU LYS PRO'  or  --aa LEU,LYS,PRO\n"
@@ -197,6 +152,16 @@ def run(
         "--d2o",
         help="Lock D2O to fixed values (repeat flag, e.g. --d2o 0 --d2o 42 --d2o 100).",
     ),
+    restriction: Optional[List[str]] = typer.Option(
+        None,
+        "--restriction",
+        help=(
+            "Restrict (forbid) the deuteration of one or more amino-acid types, "
+            "given as 3-letter codes (repeatable). Linked pairs always stay "
+            "linked: --restriction ASN also restricts ASP, and a warning is "
+            "printed."
+        ),
+    ),
     no_default_ref: bool = typer.Option(
         False,
         "--no-default-ref",
@@ -253,6 +218,9 @@ def run(
         argv += ["--gamma", str(gamma)]
     if d2o_values:
         argv += ["--d2o"] + [str(v) for v in d2o_values]
+    if restriction:
+        for code in restriction:
+            argv += ["--restriction", code]
     if no_default_ref:
         argv += ["--no_default_ref"]
     if ref:
@@ -262,7 +230,7 @@ def run(
 
     sys.argv = argv
     try:
-        from generate_deuterated_pdbs import main as ga_main
+        from src.generate_deuterated_pdbs import main as ga_main
     except ImportError as exc:
         typer.echo(f"Import error: {exc}", err=True)
         typer.echo(
@@ -276,19 +244,18 @@ def run(
 
 @app.command()
 def deuterate(
-    source: Path = typer.Argument(
-        ...,
-        exists=True,
+    source: Optional[Path] = typer.Argument(
+        None,
         help="Input PDB file or directory containing PDB files.",
     ),
-    output: Path = typer.Option(
-        ...,
+    output: Optional[Path] = typer.Option(
+        None,
         "-o",
         "--output",
-        help="Output PDB file or output directory when processing a folder.",
+        help="Output PDB file, or output directory when SOURCE is a folder.",
     ),
-    d2o: float = typer.Option(
-        0.0,
+    d2o: Optional[float] = typer.Option(
+        None,
         "--d2o",
         help="D2O percentage for labile hydrogen exchange (0-100).",
     ),
@@ -297,9 +264,10 @@ def deuterate(
         "-a",
         "--aa",
         help=(
-            "Amino acid types to deuterate. Separate multiple codes with spaces or "
-            "commas (e.g. --aa 'LEU LYS PRO' or --aa LEU,LYS,PRO). "
-            "Run 'optisans aa' to see all available codes."
+            "Amino acid types to deuterate (3-letter codes, space- or "
+            "comma-separated). Linked pairs always stay linked: --aa ASN also "
+            "deuterates ASP and a warning is printed. Run 'optisans aa' to see "
+            "all available codes."
         ),
     ),
     all_aa: bool = typer.Option(
@@ -307,151 +275,270 @@ def deuterate(
         "--all",
         help="Deuterate all amino acid types.",
     ),
+    config: Optional[Path] = typer.Option(
+        None,
+        "--config",
+        help=(
+            "INI file with the historical [DEUTERATION] and [AMINO_ACIDS] "
+            "sections, used as defaults when the CLI flags are omitted."
+        ),
+    ),
+    config_deuterate: Optional[Path] = typer.Option(
+        None,
+        "--config-deuterate",
+        help=(
+            "INI file with the [DEUTERPDB.*] engine options. "
+            "Default: ./config_deuterate.ini when present."
+        ),
+    ),
+    policy_file: Optional[Path] = typer.Option(
+        None,
+        "--policy",
+        help=(
+            "Explicit DeuterPDB policy YAML (escape hatch; takes precedence "
+            "over the [DEUTERPDB.*] sections)."
+        ),
+    ),
+    mode: Optional[str] = typer.Option(
+        None, "--mode", help="Labile exchange mode: simple | kinetic | dual."
+    ),
+    sampling: Optional[str] = typer.Option(
+        None, "--sampling", help="Sampling of the labile exchange: exact | bernoulli."
+    ),
+    rounding: Optional[str] = typer.Option(
+        None, "--rounding", help="Exact-count rounding: floor | round | ceil."
+    ),
+    seed: Optional[int] = typer.Option(
+        None, "--seed", help="RNG seed (default: the policy seed, 42)."
+    ),
+    lability_cutoff: Optional[float] = typer.Option(
+        None, "--lability-cutoff", help="Bond cutoff for labile H classification (angstrom)."
+    ),
+    quarantine: Optional[str] = typer.Option(
+        None, "--quarantine", help="Ambiguous labile H handling: warn | error."
+    ),
+    probability_burried: Optional[float] = typer.Option(
+        None, "--probability-burried", help="Buried-H probability (dual mode only)."
+    ),
+    kinetic_rate: Optional[float] = typer.Option(
+        None, "--kinetic-rate", help="Accessible exchange rate in 1/min (kinetic mode)."
+    ),
+    buried_rate: Optional[float] = typer.Option(
+        None, "--buried-rate", help="Buried exchange rate in 1/min (kinetic mode)."
+    ),
+    time_minutes: Optional[float] = typer.Option(
+        None, "--time-minutes", help="Incubation time in minutes (kinetic mode)."
+    ),
+    accessibility: bool = typer.Option(
+        False, "--accessibility", help="Enable SASA accessibility (required by kinetic/dual)."
+    ),
+    report: Optional[bool] = typer.Option(
+        None,
+        "--report/--no-report",
+        help="Write the per-atom trace + provenance report (default: on).",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
         help="Enable verbose logging.",
     ),
-    config: Optional[Path] = typer.Option(
-        None,
-        "--config",
-        help=(
-            "INI configuration file for deuteration parameters "
-            "(sections [DEUTERATION] and [AMINO_ACIDS]). "
-            "CLI arguments always override values from the config file. "
-            "See pdb_config.ini in the project root for an example."
-        ),
-    ),
 ):
-    """Deuterate one or more PDB files according to a given specification."""
+    """Deuterate PDB files with the integrated DeuterPDB engine.
+
+    Non-labile hydrogens are deuterated deterministically for the selected
+    residue types (linked pairs ASN+ASP and GLU+GLN always deuterate together);
+    labile hydrogens exchange with a probability set by the mode and the D2O
+    percentage (simple mode: d2o/100), by exact-count sampling with a seeded RNG.
+    """
+    import logging as _logging
     import re as _re
 
-    aa_list: List[str] = []
-    if amino_acids:
-        aa_list = [
-            x.strip().upper() for x in _re.split(r"[,\s]+", amino_acids) if x.strip()
-        ]
-    if all_aa:
-        aa_list = [aa.code_3 for aa in VALID_AA]
+    from src.deuterpdb import Policy
+    from src.deuteration import build_template, deuterate_codes, load_policy_and_options
+    from src.deuteration.policy_ini import DeuterPDBConfigError, read_deuteration_ini
 
-    for aa in aa_list:
-        if aa not in VALID_AA:
-            typer.echo(f"Error: invalid amino acid code: {aa}", err=True)
-            typer.echo(
-                f"Valid codes: {', '.join(sorted(VALID_AA))}",
-                err=True,
-            )
+    _logging.basicConfig(
+        level=_logging.DEBUG if verbose else _logging.INFO,
+        format="%(message)s",
+    )
+
+    # ---- configuration files ------------------------------------------------
+    config_deuterate_path: Optional[str] = None
+    if config_deuterate is not None:
+        if not config_deuterate.exists():
+            typer.echo(f"Error: config file not found: {config_deuterate}", err=True)
             raise typer.Exit(1)
+        config_deuterate_path = str(config_deuterate)
+    elif Path("config_deuterate.ini").exists():
+        config_deuterate_path = "config_deuterate.ini"
 
-    if config is not None:
+    legacy_path = str(config) if config is not None else config_deuterate_path
+    try:
+        legacy = read_deuteration_ini(legacy_path)
+    except Exception as exc:
+        typer.echo(f"Error reading {legacy_path}: {exc}", err=True)
+        raise typer.Exit(1)
+
+    # ---- policy: CLI flags > INI > defaults ---------------------------------
+    overrides: Dict = {}
+
+    def _put(section: str, key: str, value) -> None:
+        if value is None:
+            return
+        node = overrides.setdefault(section, {})
+        parts = key.split(".")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = value
+
+    _put("labile_exchange", "mode", mode)
+    _put("labile_exchange", "sampling", sampling)
+    _put("labile_exchange", "rounding", rounding)
+    _put("labile_exchange", "seed", seed)
+    _put("labile_exchange", "probability_burried", probability_burried)
+    _put("labile_exchange", "kinetic.accessible_rate", kinetic_rate)
+    _put("labile_exchange", "kinetic.buried_rate", buried_rate)
+    _put("labile_exchange", "kinetic.time_minutes", time_minutes)
+    _put("lability", "cutoff_angstrom", lability_cutoff)
+    _put("lability", "quarantine", quarantine)
+    if accessibility:
+        _put("accessibility", "enabled", True)
+
+    if policy_file is not None:
         try:
-            from pdb_deuteration import load_config_ini, merge_config, validate_config
-            ini_cfg = load_config_ini(str(config))
-        except (FileNotFoundError, ValueError) as exc:
-            typer.echo(f"Error loading config file: {exc}", err=True)
+            policy = Policy.from_yaml(str(policy_file))
+            options = {"write_report": True, "write_pdb": True}
+        except Exception as exc:
+            typer.echo(f"Error loading policy file {policy_file}: {exc}", err=True)
             raise typer.Exit(1)
     else:
-        ini_cfg = {}
-
-    if source.is_dir():
-        pdb_files = sorted(p.name for p in source.iterdir() if p.is_file() and p.suffix.lower() == ".pdb")
-        if not pdb_files:
-            typer.echo(f"No .pdb files found in directory: {source}", err=True)
+        try:
+            policy, options = load_policy_and_options(
+                config_deuterate_path,
+                overrides=overrides,
+                default_write_report=True,
+            )
+        except (DeuterPDBConfigError, FileNotFoundError, ValueError) as exc:
+            typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1)
-        if not output.exists():
-            output.mkdir(parents=True, exist_ok=True)
-        if not output.is_dir():
+
+    if report is not None:
+        options["write_report"] = report
+
+    # ---- resolve input / output ---------------------------------------------
+    src_path: Optional[Path] = Path(source) if source is not None else None
+    if src_path is None and legacy.get("input_pdb"):
+        src_path = Path(str(legacy["input_pdb"]))
+    if src_path is None:
+        typer.echo(
+            "Error: no input given (SOURCE argument or [DEUTERATION] input_pdb).",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if not src_path.exists():
+        typer.echo(f"Error: input not found: {src_path}", err=True)
+        raise typer.Exit(1)
+
+    d2o_value = float(d2o) if d2o is not None else float(legacy.get("d2o_percent", 0.0))
+    if not 0.0 <= d2o_value <= 100.0:
+        typer.echo(f"Error: --d2o must be in [0, 100], got {d2o_value}", err=True)
+        raise typer.Exit(1)
+
+    # ---- amino-acid selection (linked pairs stay linked) --------------------
+    codes: List[str] = []
+    all_residues = False
+    if all_aa:
+        all_residues = True
+    else:
+        if amino_acids:
+            codes = [c.upper() for c in _re.split(r"[,\s]+", amino_acids) if c]
+        else:
+            codes = [c.upper() for c in legacy.get("amino_acids", [])]
+        invalid = [c for c in codes if c not in VALID_AA]
+        if invalid:
+            typer.echo(
+                f"Error: invalid amino acid code(s): {', '.join(invalid)}", err=True
+            )
+            typer.echo(f"Valid codes: {', '.join(sorted(VALID_AA))}", err=True)
+            raise typer.Exit(1)
+
+    policy_seed = policy.get("labile_exchange", "seed")
+    run_seed = 42 if policy_seed is None else int(policy_seed)
+    if seed is not None:
+        run_seed = int(seed)
+
+    typer.echo(
+        f"DeuterPDB policy {policy.hash} | mode={policy.get('labile_exchange', 'mode')} "
+        f"| sampling={policy.get('labile_exchange', 'sampling')} "
+        f"| d2o={d2o_value}% | seed={run_seed} "
+        f"| report={'on' if options['write_report'] else 'off'}"
+    )
+
+    # ---- processing ---------------------------------------------------------
+    def _process_one(in_path: Path, out_path: Path) -> None:
+        template = build_template(str(in_path), policy)
+        result = deuterate_codes(
+            template,
+            codes=codes,
+            all_residues=all_residues,
+            d2o=d2o_value,
+            seed=run_seed,
+            collect_trace=True,
+        )
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        result.write_pdb(str(out_path))
+        if options["write_report"]:
+            result.write_report(str(out_path.with_suffix("")))
+        stats = result.stats
+        typer.echo(
+            f"  {in_path.name} -> {out_path}  |  D={stats['deuterium_atoms']} "
+            f"({stats['deuterium_pct']:.2f}% of H/D)  "
+            f"|  non-labile D={stats['non_labile_D']}"
+        )
+
+    if src_path.is_dir():
+        pdb_files = sorted(
+            p for p in src_path.iterdir() if p.is_file() and p.suffix.lower() == ".pdb"
+        )
+        if not pdb_files:
+            typer.echo(f"No .pdb files found in directory: {src_path}", err=True)
+            raise typer.Exit(1)
+        out_dir = Path(output) if output is not None else src_path
+        if out_dir.exists() and not out_dir.is_dir():
             typer.echo(
                 "When SOURCE is a directory, --output must be a directory.",
                 err=True,
             )
             raise typer.Exit(1)
-
-        typer.echo(f"Processing {len(pdb_files)} PDB files from: {source}")
-        typer.echo(f"Output directory: {output}")
-
-        ok = 0
-        ko = 0
-        for idx, name in enumerate(pdb_files, start=1):
-            in_path = source / name
-            out_path = output / name
-
+        out_dir.mkdir(parents=True, exist_ok=True)
+        typer.echo(f"Processing {len(pdb_files)} PDB file(s) from {src_path} -> {out_dir}")
+        failures = 0
+        for in_path in pdb_files:
             try:
-                from pdb_deuteration import build_batch_config, deuterate_file
-            except ImportError as exc:
-                typer.echo(f"Import error: {exc}", err=True)
-                raise typer.Exit(1)
-
-            try:
-                cfg = build_batch_config(
-                    input_pdb=str(in_path),
-                    output_pdb=str(out_path),
-                    d2o_percent=d2o,
-                    all_aa=all_aa,
-                    amino_acids=aa_list or None,
-                    config_path=str(config) if config else None,
-                    verbose=verbose,
-                )
-            except ValueError as exc:
-                typer.echo(f"[{idx}/{len(pdb_files)}] Invalid config for {name}: {exc}", err=True)
-                ko += 1
-                continue
-
-            typer.echo(f"[{idx}/{len(pdb_files)}] Deuterating {name} ...")
-            success = deuterate_file(
-                input_pdb=cfg["input_pdb"],
-                output_pdb=cfg["output_pdb"],
-                d2o_percent=cfg["d2o_percent"],
-                deuteration_vector=cfg["deuteration_vector"],
-                verbose=cfg["verbose"],
-            )
-            if success:
-                ok += 1
-            else:
-                ko += 1
-
-        typer.echo(f"Done. succeeded={ok}, failed={ko} out of {len(pdb_files)} files.")
-        if ko:
+                _process_one(in_path, out_dir / in_path.name)
+            except Exception as exc:
+                typer.echo(f"  FAILED {in_path.name}: {exc}", err=True)
+                failures += 1
+        if failures:
             raise typer.Exit(1)
         return
 
-    single_input = source
-    if output.exists() and output.is_dir():
-        single_output = output / source.name
+    # single file
+    if output is None and legacy.get("output_pdb"):
+        out_path = Path(str(legacy["output_pdb"]))
+    elif output is None:
+        out_path = Path("deuterated.pdb")
     else:
-        single_output = output
+        out_path = Path(output)
+        if out_path.exists() and out_path.is_dir():
+            out_path = out_path / src_path.name
 
-    argv = ["pdb_deuteration"]
-    argv += [
-        "-i",
-        str(single_input),
-        "-o",
-        str(single_output),
-        "--d2o",
-        str(d2o),
-    ]
-    if config is not None:
-        argv += [str(config)]
-    if all_aa:
-        argv.append("--all")
-    elif aa_list:
-        for aa in aa_list:
-            argv.append(f"--{aa}")
-    if verbose:
-        argv.append("--verbose")
-
-    sys.argv = argv
     try:
-        from pdb_deuteration import main as deut_main
-    except ImportError as exc:
-        typer.echo(f"Import error: {exc}", err=True)
-        typer.echo(
-            "Make sure you are running inside the pixi environment: "
-            "pixi run optisans deuterate ...",
-            err=True,
-        )
+        _process_one(src_path, out_path)
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
-    deut_main()
 
 
 @app.command()
@@ -510,7 +597,7 @@ def evaluate(
 
     sys.argv = argv
     try:
-        from fitness_evaluation import main as eval_main
+        from src.fitness_evaluation import main as eval_main
     except ImportError as exc:
         typer.echo(f"Import error: {exc}", err=True)
         typer.echo(
@@ -607,6 +694,14 @@ def recycle(
             "ref/ subfolder of the SANS output directory."
         ),
     ),
+    config_deuterate: Optional[Path] = typer.Option(
+        None,
+        "--config-deuterate",
+        help=(
+            "INI file with the [DEUTERPDB.*] engine options. "
+            "Default: ./config_deuterate.ini when present."
+        ),
+    ),
 ):
     """
     Contrast variation scan: generate all D2O PDBs (0–100%) with a fixed
@@ -633,7 +728,7 @@ def recycle(
         raise typer.Exit(1)
 
     try:
-        from recycle import recycle_workflow
+        from src.recycle import recycle_workflow
     except ImportError as exc:
         typer.echo(f"Import error: {exc}", err=True)
         typer.echo(
@@ -657,6 +752,11 @@ def recycle(
             no_default_ref=no_default_ref,
             gamma=gamma,
             conc=conc,
+            policy_ini=(
+                str(config_deuterate)
+                if config_deuterate is not None
+                else ("config_deuterate.ini" if Path("config_deuterate.ini").exists() else None)
+            ),
         )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         typer.echo(f"Error: {exc}", err=True)
