@@ -1127,9 +1127,9 @@ def write_effective_config(
 
     acc = policy.get("accessibility")
     L.append("[DEUTERPDB.ACCESSIBILITY]")
-    for key in ("enabled", "sasa_probe", "sasa_n_points", "threshold_angstrom2",
-                "threshold_mode", "use_hbond_protection", "hbond_max_h_o",
-                "hbond_min_angle"):
+    for key in ("enabled", "granularity", "sasa_probe", "sasa_n_points",
+                "threshold_angstrom2", "threshold_mode", "use_hbond_protection",
+                "hbond_max_h_o", "hbond_min_angle"):
         L.append(f"{key} = {_fmt(acc[key])}")
     L.append("")
 

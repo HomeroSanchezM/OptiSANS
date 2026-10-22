@@ -332,6 +332,11 @@ def deuterate(
     accessibility: bool = typer.Option(
         False, "--accessibility", help="Enable SASA accessibility (required by kinetic/dual)."
     ),
+    granularity: Optional[str] = typer.Option(
+        None,
+        "--granularity",
+        help="Accessible/buried scale: residue (default) | atom. Enables SASA accessibility.",
+    ),
     report: Optional[bool] = typer.Option(
         None,
         "--report/--no-report",
@@ -401,8 +406,11 @@ def deuterate(
     _put("labile_exchange", "kinetic.time_minutes", time_minutes)
     _put("lability", "cutoff_angstrom", lability_cutoff)
     _put("lability", "quarantine", quarantine)
-    if accessibility:
+    if accessibility or granularity is not None:
+        # A granularity is meaningless without the SASA populations, so asking for
+        # a scale enables them (a flag that is silently ignored would be worse).
         _put("accessibility", "enabled", True)
+    _put("accessibility", "granularity", granularity)
 
     if policy_file is not None:
         try:
@@ -471,6 +479,7 @@ def deuterate(
         f"DeuterPDB policy {policy.hash} | mode={policy.get('labile_exchange', 'mode')} "
         f"| sampling={policy.get('labile_exchange', 'sampling')} "
         f"| d2o={d2o_value}% | seed={run_seed} "
+        f"| accessibility={policy.get('accessibility', 'granularity')} "
         f"| report={'on' if options['write_report'] else 'off'}"
     )
 
@@ -491,10 +500,18 @@ def deuterate(
         if options["write_report"]:
             result.write_report(str(out_path.with_suffix("")))
         stats = result.stats
+        counts = ""
+        if "labile_H_accessible" in stats:
+            counts = (
+                f"  |  SASA {stats['labile_H_accessible']} accessible / "
+                f"{stats['labile_H_buried']} buried  "
+                f"|  residues {stats['residues_accessible']} accessible / "
+                f"{stats['residues_buried']} buried ({stats['residues_mixed']} mixed)"
+            )
         typer.echo(
             f"  {in_path.name} -> {out_path}  |  D={stats['deuterium_atoms']} "
             f"({stats['deuterium_pct']:.2f}% of H/D)  "
-            f"|  non-labile D={stats['non_labile_D']}"
+            f"|  non-labile D={stats['non_labile_D']}{counts}"
         )
 
     if src_path.is_dir():

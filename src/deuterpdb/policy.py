@@ -30,6 +30,7 @@ _DEFAULTS: Dict[str, Any] = {
     },
     "accessibility": {
         "enabled": False,
+        "granularity": "residue",
         "sasa_probe": 1.4,
         "sasa_n_points": 92,
         "threshold_angstrom2": 5.0,
@@ -69,6 +70,7 @@ _TYPES: Dict[str, Any] = {
     "lability.ambiguity_tolerance": float,
     "lability.quarantine": str,
     "accessibility.enabled": bool,
+    "accessibility.granularity": str,
     "accessibility.sasa_probe": float,
     "accessibility.sasa_n_points": int,
     "accessibility.threshold_angstrom2": float,
@@ -97,6 +99,7 @@ _ENUMS: Dict[str, set] = {
     "template.protonation": {"never", "always", "auto"},
     "lability.quarantine": {"warn", "error"},
     "accessibility.threshold_mode": {"absolute", "relative"},
+    "accessibility.granularity": {"atom", "residue"},
     "labile_exchange.mode": {"simple", "kinetic", "dual"},
     "labile_exchange.sampling": {"exact", "bernoulli"},
     "labile_exchange.rounding": {"floor", "round", "ceil"},

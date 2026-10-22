@@ -15,6 +15,7 @@ TRACE_COLUMNS = [
     "element_after",
     "labile",
     "population",
+    "population_atom",
     "probability",
     "converted",
     "reason",
@@ -33,30 +34,45 @@ def write_atom_trace(path: str, trace: List[Dict[str, Any]]) -> None:
 
 
 def write_aggregates(path: str, trace: List[Dict[str, Any]]) -> None:
-    """Aggregated counts per residue and per amino-acid type."""
+    """Aggregated counts per residue and per amino-acid type.
+
+    Residue rows carry the population of the residue when all its labile atoms
+    agree (`mixed` otherwise, `""` when the residue has no labile atom).
+    """
     by_residue: Dict[str, Dict[str, int]] = defaultdict(
         lambda: {"n": 0, "n_labile": 0, "n_d": 0}
     )
     by_aatype: Dict[str, Dict[str, int]] = defaultdict(
         lambda: {"n": 0, "n_labile": 0, "n_d": 0}
     )
+    residue_populations: Dict[str, set] = defaultdict(set)
     for row in trace:
         res_key = f"{row['chain']}|{row['residue_number']}|{row['residue_name']}"
+        if row["labile"] and row.get("population"):
+            residue_populations[res_key].add(row["population"])
         for table, key in ((by_residue, res_key), (by_aatype, row["residue_name"])):
             table[key]["n"] += 1
             if row["labile"]:
                 table[key]["n_labile"] += 1
             if row["element_after"] == "D":
                 table[key]["n_d"] += 1
+
+    def residue_population(key: str) -> str:
+        values = residue_populations.get(key, set())
+        if not values:
+            return ""
+        return next(iter(values)) if len(values) == 1 else "mixed"
+
     with open(path, "w", newline="") as fh:
-        fh.write("level\tkey\tn\tn_labile\tn_D\tpct_D\n")
+        fh.write("level\tkey\tn\tn_labile\tn_D\tpct_D\tpopulation\n")
         for level, table in (("residue", by_residue), ("aa_type", by_aatype)):
             for key in sorted(table):
                 entry = table[key]
                 pct = 100.0 * entry["n_d"] / entry["n"] if entry["n"] else 0.0
+                population = residue_population(key) if level == "residue" else ""
                 fh.write(
                     f"{level}\t{key}\t{entry['n']}\t{entry['n_labile']}\t"
-                    f"{entry['n_d']}\t{pct:.2f}\n"
+                    f"{entry['n_d']}\t{pct:.2f}\t{population}\n"
                 )
 
 

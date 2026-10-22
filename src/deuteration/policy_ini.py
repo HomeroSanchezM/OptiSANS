@@ -79,6 +79,7 @@ _SECTION_MAP: Dict[str, Tuple[str, Dict[str, type]]] = {
         "accessibility",
         {
             "enabled": bool,
+            "granularity": str,
             "sasa_probe": float,
             "sasa_n_points": int,
             "threshold_angstrom2": float,

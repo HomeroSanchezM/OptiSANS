@@ -4,6 +4,13 @@ Validated against Biopython ShrakeRupley on 6HWM_H.pdb: total SASA 56382 vs
 56335 A^2 (0.08 %), per-residue Pearson r = 0.9988, 2.8 s for 10429 heavy
 atoms. A test point is buried iff |p - x_j| < r_j + probe (neighbor sphere
 expanded by the probe radius); using r_j alone overestimates SASA about 11x.
+
+Two scales, both driven by the policy:
+
+- atom: a labile H is accessible when the SASA of its bonded heavy atom
+  reaches the threshold;
+- residue (default): the atom-level result is collapsed per residue with an
+  OR rule, so one accessible H makes the whole residue accessible.
 """
 
 from __future__ import annotations
@@ -122,14 +129,14 @@ def _hbond_protected(
     return angle >= min_angle
 
 
-def assign_populations(
+def populations_per_atom(
     structure: gemmi.Structure,
     sasa: Dict[AtomKey, float],
     topo: Topology,
     labile_map: Dict[AtomKey, bool],
     policy: Policy,
 ) -> Tuple[Dict[AtomKey, str], List[str]]:
-    """Assign each labile H to 'accessible' or 'buried'.
+    """Assign each labile H to 'accessible' or 'buried' from its carrier SASA.
 
     The population comes from the SASA of the bonded heavy atom compared to a
     threshold (absolute A^2, or a fraction of the maximum observed for the
@@ -203,3 +210,55 @@ def assign_populations(
                         accessible = False
                 populations[key] = POP_ACCESSIBLE if accessible else POP_BURIED
     return populations, warnings
+
+
+def residue_populations(
+    atom_populations: Dict[AtomKey, str],
+) -> Dict[Tuple[int, int], str]:
+    """Collapse the per-atom populations to one population per residue.
+
+    The exchange is treated at the residue scale: as soon as one labile H of a
+    residue is accessible, every labile H of that residue is accessible, and a
+    residue is buried only when all its labile H are buried. This follows the
+    flexibility of the side chains: an exposed part drags the backbone amide
+    with it, and only residues whose carriers are all buried stay in the slow
+    population.
+    """
+    residue_population: Dict[Tuple[int, int], str] = {}
+    for (chain_idx, residue_idx, _name), population in atom_populations.items():
+        if population == POP_ACCESSIBLE:
+            residue_population[(chain_idx, residue_idx)] = POP_ACCESSIBLE
+        else:
+            residue_population.setdefault((chain_idx, residue_idx), POP_BURIED)
+    return residue_population
+
+
+def apply_granularity(
+    atom_populations: Dict[AtomKey, str], granularity: str
+) -> Dict[AtomKey, str]:
+    """Rewrite the per-atom map with the residue decision ('residue'), or keep it."""
+    if granularity != "residue":
+        return dict(atom_populations)
+    by_residue = residue_populations(atom_populations)
+    return {key: by_residue[(key[0], key[1])] for key in atom_populations}
+
+
+def assign_populations(
+    structure: gemmi.Structure,
+    sasa: Dict[AtomKey, float],
+    topo: Topology,
+    labile_map: Dict[AtomKey, bool],
+    policy: Policy,
+    granularity: Optional[str] = None,
+) -> Tuple[Dict[AtomKey, str], List[str]]:
+    """Assign each labile H to 'accessible' or 'buried'.
+
+    Atom-level classification, then the residue rule when
+    `accessibility.granularity` is 'residue' (the policy default).
+    """
+    if granularity is None:
+        granularity = policy.get("accessibility", "granularity")
+    populations, warnings = populations_per_atom(
+        structure, sasa, topo, labile_map, policy
+    )
+    return apply_granularity(populations, str(granularity)), warnings

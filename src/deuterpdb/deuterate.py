@@ -12,7 +12,14 @@ import numpy as np
 
 from . import kinetics
 from . import lability as lability_mod
-from .accessibility import POP_ACCESSIBLE, POP_BURIED, assign_populations, sasa_per_heavy_atom
+from .accessibility import (
+    POP_ACCESSIBLE,
+    POP_BURIED,
+    apply_granularity,
+    populations_per_atom,
+    residue_populations,
+    sasa_per_heavy_atom,
+)
 from .io import StructureError, load_structure, structure_hash
 from .policy import Policy
 from .protonate import protonate_structure, strip_water_and_ligand
@@ -125,6 +132,9 @@ class Template:
     """Protein-only structure with precomputed lability and population maps.
 
     Build once per input structure; reuse for any number of DeuterationSpecs.
+    `population_map` follows `accessibility.granularity` (residue by default),
+    `atom_population_map` keeps the raw per-atom classification and
+    `residue_population_map` holds one population per residue.
     """
 
     def __init__(
@@ -136,12 +146,18 @@ class Template:
         population_map: Dict[AtomKey, str],
         dropped: Dict[str, Dict[str, int]],
         warnings: List[str],
+        atom_population_map: Optional[Dict[AtomKey, str]] = None,
+        residue_population_map: Optional[Dict[Tuple[int, int], str]] = None,
+        granularity: str = "residue",
     ):
         self.structure = structure
         self.policy = policy
         self.topo = topo
         self.labile_map = labile_map
         self.population_map = population_map
+        self.atom_population_map = atom_population_map or {}
+        self.residue_population_map = residue_population_map or {}
+        self.granularity = granularity
         self.dropped = dropped
         self.warnings = warnings
         self.hash = structure_hash(structure)
@@ -177,17 +193,31 @@ class Template:
         warnings_list.extend(topo.warnings)
         labile_map = lability_mod.classify(structure[0], topo)
         population_map: Dict[AtomKey, str] = {}
+        atom_population_map: Dict[AtomKey, str] = {}
+        residue_population_map: Dict[Tuple[int, int], str] = {}
+        granularity = policy.get("accessibility", "granularity")
         if (
             policy.get("labile_exchange", "mode") in ("kinetic", "dual")
             and policy.get("accessibility", "enabled")
         ):
             sasa = sasa_per_heavy_atom(structure)
-            population_map, pop_warnings = assign_populations(
+            atom_population_map, pop_warnings = populations_per_atom(
                 structure, sasa, topo, labile_map, policy
             )
+            residue_population_map = residue_populations(atom_population_map)
+            population_map = apply_granularity(atom_population_map, granularity)
             warnings_list.extend(pop_warnings)
         return cls(
-            structure, policy, topo, labile_map, population_map, dropped, warnings_list
+            structure,
+            policy,
+            topo,
+            labile_map,
+            population_map,
+            dropped,
+            warnings_list,
+            atom_population_map=atom_population_map,
+            residue_population_map=residue_population_map,
+            granularity=granularity,
         )
 
     @property
@@ -347,6 +377,7 @@ class Template:
                     element_before = atom.element.name
                     will_convert = key in converted and element_before == "H"
                     population = ""
+                    population_atom = ""
                     probability = 0.0
                     reason = ""
                     if labile:
@@ -356,6 +387,7 @@ class Template:
                             else "labile"
                         )
                         probability = p_of.get(population, fallback_p)
+                        population_atom = self.atom_population_map.get(key, population)
                     elif element_before == "D":
                         reason = "already_deuterated"
                     if will_convert:
@@ -375,6 +407,7 @@ class Template:
                                 "element_after": atom.element.name,
                                 "labile": int(labile),
                                 "population": population,
+                                "population_atom": population_atom,
                                 "probability": probability,
                                 "converted": int(will_convert),
                                 "reason": reason,
@@ -409,6 +442,35 @@ class Template:
         if mode in ("kinetic", "dual"):
             stats["accessible_probability"] = p_acc
             stats["buried_probability"] = p_bur
+            if pop_map:
+                applied = {
+                    key: pop_map.get(key, POP_BURIED)
+                    for key, labile in self.labile_map.items()
+                    if labile
+                }
+                stats["accessibility_granularity"] = self.granularity
+                stats["labile_H_accessible"] = sum(
+                    1 for value in applied.values() if value == POP_ACCESSIBLE
+                )
+                stats["labile_H_buried"] = sum(
+                    1 for value in applied.values() if value == POP_BURIED
+                )
+                by_residue = residue_populations(applied)
+                stats["residues_accessible"] = sum(
+                    1 for value in by_residue.values() if value == POP_ACCESSIBLE
+                )
+                stats["residues_buried"] = sum(
+                    1 for value in by_residue.values() if value == POP_BURIED
+                )
+                # Mixing is a property of the atom-level classification, so it
+                # is reported against the pre-aggregation map.
+                reference = self.atom_population_map or applied
+                per_residue: Dict[Tuple[int, int], Set[str]] = {}
+                for (ci, ri, _name), value in reference.items():
+                    per_residue.setdefault((ci, ri), set()).add(value)
+                stats["residues_mixed"] = sum(
+                    1 for values in per_residue.values() if len(values) > 1
+                )
         else:
             stats["labile_probability"] = p_all
         stats["deuterium_pct_protein"] = stats["deuterium_pct"]
@@ -443,11 +505,8 @@ class DeuterationResult:
         self.structure.write_pdb(path)
 
     def write_report(self, path_prefix: str) -> None:
-        # The per-atom trace is optional (collect_trace=False on the spec): when
-        # it is off, only the provenance file is written.
-        if self.atom_trace:
-            write_atom_trace(path_prefix + ".atom_trace.tsv", self.atom_trace)
-            write_aggregates(path_prefix + ".aggregates.tsv", self.atom_trace)
+        write_atom_trace(path_prefix + ".atom_trace.tsv", self.atom_trace)
+        write_aggregates(path_prefix + ".aggregates.tsv", self.atom_trace)
         write_provenance(
             path_prefix + ".provenance.json",
             {
