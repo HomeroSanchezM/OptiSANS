@@ -69,14 +69,21 @@ def selection_from_chromosome(bits18: Sequence[bool]) -> Selection:
 # Seeds
 # ---------------------------------------------------------------------------
 
-def seed_for_spec(run_seed: int, bits18: Sequence[bool], d2o: float) -> int:
+def seed_for_spec(run_seed: int, bits18: Sequence[bool], d2o: float,
+                  conf_idx: Optional[int] = None) -> int:
     """Deterministic per-spec seed derived from the run seed and the spec.
 
     Two runs with the same seed, pattern and D2O produce byte-identical PDBs;
     two different chromosomes never share the same sampling sequence.
+
+    ``conf_idx`` (ensemble mode) is appended to the payload only when set, so
+    single-PDB runs keep byte-identical seeds with previous versions while
+    each conformation of an ensemble samples independently but deterministically.
     """
     bits = "".join("1" if bit else "0" for bit in bits18)
     payload = f"{int(run_seed)}|{bits}|{int(d2o)}"
+    if conf_idx is not None:
+        payload += f"|conf{int(conf_idx)}"
     return int(hashlib.sha256(payload.encode()).hexdigest()[:8], 16)
 
 
@@ -96,13 +103,20 @@ def deuterate_chromosome(
     d2o: float,
     run_seed: int,
     collect_trace: bool = False,
+    conf_idx: Optional[int] = None,
 ) -> DeuterationResult:
-    """Deuterate one GA chromosome (simple mode, exact-count, seeded)."""
+    """Deuterate one GA chromosome (simple mode, exact-count, seeded).
+
+    ``conf_idx`` is only used in ensemble mode: it is forwarded to
+    :func:`seed_for_spec` so that each conformation of the same chromosome
+    samples independently but deterministically.  ``None`` (single-PDB mode)
+    keeps the legacy seed payload unchanged.
+    """
     spec = DeuterationSpec(
         selection=selection_from_chromosome(bits18),
         mode="simple",
         d2o_percent=float(d2o),
-        seed=seed_for_spec(run_seed, bits18, d2o),
+        seed=seed_for_spec(run_seed, bits18, d2o, conf_idx=conf_idx),
         collect_trace=collect_trace,
     )
     return template.deuterate(spec)

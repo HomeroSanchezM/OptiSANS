@@ -16,6 +16,7 @@ import glob
 import logging
 import os
 import re
+from typing import Dict, List, Tuple
 
 import numpy as np
 from scipy.integrate import simpson
@@ -509,6 +510,130 @@ def evaluate_population_fitness(
             ratios.append(0.0)
 
     return np.array(raw_scores, dtype=float), valid_files, np.array(ratios, dtype=float)
+
+
+# ============================================================================
+#  ENSEMBLE (MULTI-PDB) HELPERS
+# ============================================================================
+
+
+def mean_curve(file_paths: List[str]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Parse all curves, regrid onto the first file's q-grid, average.
+
+    Args:
+        file_paths: List of .dat file paths (one per conformation).
+
+    Returns:
+        (q, I_mean, I_std): q-grid of the first file, mean and std of the
+        regridded intensities along axis 0.
+    """
+    curves = [parse_sans_file(f) for f in file_paths]
+    q0 = curves[0][0]
+    I_stack = np.stack([regrid_curve(q, I, q0) for q, I in curves])
+    return q0, I_stack.mean(axis=0), I_stack.std(axis=0)
+
+
+def group_dat_files_by_chromosome(directory) -> Dict[str, List[str]]:
+    """Group the .dat files of *directory* by chromosome-level stem.
+
+    The ``_confNNNN`` ensemble suffix is stripped by
+    :func:`src.ensemble.chrom_key_from_filename`, so all per-conformation
+    curves of one chromosome land in the same group.
+    """
+    from src.ensemble import chrom_key_from_filename
+
+    groups: Dict[str, List[str]] = {}
+    for f in find_dat_files(directory):
+        groups.setdefault(chrom_key_from_filename(f), []).append(f)
+    return groups
+
+
+def evaluate_population_fitness_mean(
+    directory,
+    q_max=0.3,
+    ratio_threshold=0.01,
+    gamma=2,
+):
+    """Ensemble variant of :func:`evaluate_population_fitness`.
+
+    The fitness of each chromosome is computed on the mean of its
+    per-conformation .dat files.  The D2O ratio check still works:
+    ``_d2o(\\d+)`` matches inside conf-suffixed filenames, so the first
+    file of each group is passed to :func:`fitness` unchanged.
+
+    Args:
+        directory:       Directory with simulated .dat files and a ref/ subfolder
+        q_max:           q truncation limit
+        ratio_threshold: Minimum Imax/background ratio
+        gamma:           Exponent applied to ratio in fitness formula
+
+    Returns:
+        (raw_scores, chrom_keys, ratios, groups)
+    """
+    groups = group_dat_files_by_chromosome(directory)
+    logger.info(
+        f"Found {sum(len(v) for v in groups.values())} simulated .dat files "
+        f"in {len(groups)} chromosome group(s)"
+    )
+
+    ref_dir = os.path.join(directory, "ref")
+    ref_paths = find_all_reference_files(ref_dir)
+    logger.info(f"Found {len(ref_paths)} reference file(s) in ref/")
+    references = [parse_sans_file(p) for p in ref_paths]
+
+    scores, keys, ratios = [], [], []
+    for key in sorted(groups):
+        files = groups[key]
+        q, I_mean, _ = mean_curve(files)
+        try:
+            score, ratio = fitness(
+                q, I_mean, references, q_max, files[0],
+                ratio_threshold, gamma=gamma,
+            )
+        except Exception as e:
+            logger.warning(f"Skipping chromosome group {key}: {e}")
+            score, ratio = 0.0, 0.0
+        scores.append(score)
+        keys.append(key)
+        ratios.append(ratio)
+        logger.debug(f"{key}: ratio={ratio:.4f} score={score:.6e} ({len(files)} curve(s))")
+
+    return (np.array(scores, dtype=float), keys,
+            np.array(ratios, dtype=float), groups)
+
+
+def average_ref_curves(primus_dir,
+                       kinds=("total_deuteration", "total_protonation")) -> None:
+    """Replace per-conformation reference curves in ``primus_dir/ref/`` by one
+    mean curve per kind (``mean_<kind>.dat``).
+
+    Called once in ensemble mode, after the generation-0 full-mode batch run
+    and before the first fitness evaluation, so that ``ref/`` contains exactly
+    one mean curve per reference kind and the "all .dat in ref/" contract of
+    :func:`evaluate_population_fitness` keeps holding.
+
+    The 3-column mean file reloads fine through :func:`parse_sans_file`
+    (only columns 0 and 1 are read).
+    """
+    ref_dir = os.path.join(primus_dir, "ref")
+    for kind in kinds:
+        files = sorted(glob.glob(
+            os.path.join(ref_dir, f"*_conf[0-9][0-9][0-9][0-9]_{kind}.dat")))
+        if not files:
+            continue
+        q, I_mean, I_std = mean_curve(files)
+        out = os.path.join(ref_dir, f"mean_{kind}.dat")
+        with open(out, "w") as fh:
+            fh.write(f"# mean over {len(files)} conformation(s)\n")
+            fh.write("# q  I_mean  I_std\n")
+            for qi, mi, si in zip(q, I_mean, I_std):
+                fh.write(f"{qi:.6f}\t{mi:.6e}\t{si:.6e}\n")
+        for f in files:
+            os.unlink(f)
+        logger.info(
+            f"Mean reference: {os.path.basename(out)} "
+            f"({len(files)} curve(s) averaged)"
+        )
 
 
 def main():

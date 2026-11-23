@@ -66,7 +66,20 @@ def run(
     pdb_file: Path = typer.Argument(
         ...,
         exists=True,
-        help="Source PDB file (all hydrogens must be explicit and protonated).",
+        dir_okay=True,
+        help=(
+            "Source PDB file, or directory of PDB files (ensemble mode when "
+            "combined with --conf). All hydrogens must be explicit and protonated."
+        ),
+    ),
+    conf: Optional[int] = typer.Option(
+        None,
+        "--conf",
+        help=(
+            "Ensemble mode: use the first N PDB files of the input directory "
+            "(sorted, or seeded-shuffled when --seed is set). Ignored when the "
+            "input is a single PDB file."
+        ),
     ),
     population_size: Optional[int] = typer.Option(
         None,
@@ -183,14 +196,20 @@ def run(
         help="Enable verbose logging.",
     ),
 ):
-    """Run the full genetic algorithm on a PDB file.
+    """Run the full genetic algorithm on a PDB file or a directory of PDBs.
 
     Outputs are written to the following directories by default:
       '<pdb_basename>_deuterated_pdbs/'   — generated deuterated PDB files
       '<pdb_basename>_primus_out/'        — Pepsi-SANS simulation results
       '<pdb_basename>_final_results/'     — best solution summary
+
+    When PDB_FILE is a directory and --conf N is given (ensemble mode), the
+    first N PDBs of the folder are used: every chromosome is deuterated once
+    per conformation and its fitness is computed on the mean SANS curve.
     """
     argv = ["generate_deuterated_pdbs", str(pdb_file)]
+    if conf is not None:
+        argv += ["--conf", str(conf)]
     if population_size is not None:
         argv += ["-p", str(population_size)]
     if generations is not None:

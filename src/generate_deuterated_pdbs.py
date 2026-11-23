@@ -58,7 +58,21 @@ from src.deuteration import (
     deuterate_codes,
     load_policy_and_options,
 )
-from src.fitness_evaluation import evaluate_population_fitness
+from src.ensemble import (
+    aggregate_composition,
+    build_templates,
+    chrom_key_from_filename,
+    generate_pdbs_for_chromosomes_multi,
+    get_pdb_filename,
+    resolve_pdb_inputs,
+)
+from src.fitness_evaluation import (
+    average_ref_curves,
+    evaluate_population_fitness,
+    evaluate_population_fitness_mean,
+    group_dat_files_by_chromosome,
+    mean_curve,
+)
 
 # ============================================================================
 #                           LOGGING CONFIGURATION
@@ -105,21 +119,9 @@ _AA_PLOT_LABELS = [
 # ============================================================================
 #                           FILENAME HELPERS
 # ============================================================================
-
-def get_pdb_filename(chrom: Chromosome) -> str:
-    """
-    Derive the PDB filename from the chromosome's intrinsic attributes.
-
-    Format: gen{generation:02d}_Chr{index:03d}_d2o{d2o:03d}_deut{n_deut:02d}.pdb
-
-    ``n_deut`` is the number of deuterated effective genes (0-18).  Because
-    the linked-pair scheme uses 18 genes, this value can now be at most 18
-    instead of 20 in the old per-AA scheme — filenames remain uniquely
-    descriptive.
-    """
-    num_deut = sum(chrom.deuteration)   # count of True genes in 18-element vector
-    return (f"gen{chrom.generation:02d}_Chr{chrom.index:03d}"
-            f"_d2o{chrom.d2o:03d}_deut{num_deut:02d}.pdb")
+# get_pdb_filename() now lives in src/ensemble.py (with the optional
+# conf_idx parameter for ensemble mode) and is re-exported here by the
+# import above, so all existing callers keep working unchanged.
 
 
 def get_sorted_indices(population: List[Chromosome]) -> List[int]:
@@ -153,7 +155,8 @@ def parse_arguments():
     )
 
     # ---- Positional ----
-    parser.add_argument('pdb_file', type=str, help='Source PDB file to deuterate')
+    parser.add_argument('pdb_file', type=str,
+                        help='Source PDB file, or directory of PDB files (ensemble mode with --conf)')
 
     # ---- Config file ----
     parser.add_argument('--config', type=str, metavar='FILE',
@@ -163,6 +166,10 @@ def parse_arguments():
     io = parser.add_argument_group('Input/Output')
     io.add_argument('--output_dir', type=str,
                     help='Output directory (default: <pdb_basename>_deuterated_pdbs)')
+    io.add_argument('--conf', type=int, default=None, metavar='N',
+                    help='Ensemble mode: use the first N PDB files of the input directory '
+                         '(sorted, or seeded-shuffled when --seed is set). '
+                         'Ignored (with a warning) when the input is a single PDB file.')
     io.add_argument('--batch_script', type=str, default='./parallel_process_pdb.sh',
                     help='Path to the batch processing script')
     io.add_argument('--conc', type=float, default=2.5,
@@ -237,6 +244,7 @@ def load_config_ini(path: str) -> Dict[str, Any]:
     Load genetic algorithm configuration from an INI file.
 
     Supported sections:
+      [INPUT]       n_conformations (same as --conf)
       [POPULATION]  population_size, elitism, d2o_variation_rate
       [GENETIC]     mutation_rate, crossover_rate
       [EXECUTION]   generations, seed, patience
@@ -251,6 +259,8 @@ def load_config_ini(path: str) -> Dict[str, Any]:
     config.read(path)
     cfg: Dict[str, Any] = {}
 
+    if config.has_section("INPUT"):
+        cfg["n_conformations"] = config.getint("INPUT", "n_conformations", fallback=None)
     if config.has_section("POPULATION"):
         cfg["population_size"]   = config.getint("POPULATION", "population_size", fallback=None)
         cfg["elitism"]           = config.getint("POPULATION", "elitism", fallback=None)
@@ -362,6 +372,9 @@ def merge_config(cli_args: argparse.Namespace,
             getattr(cli_args, "restriction", None),
         ),
         "d2o":                pick(getattr(cli_args, 'd2o', None), ini_cfg.get("d2o"), None),
+        # Ensemble mode: --conf N (CLI) overrides [INPUT] n_conformations (INI)
+        "n_conformations":    pick(getattr(cli_args, 'conf', None),
+                                   ini_cfg.get("n_conformations"), None),
         # Reference options
         "no_default_ref":     cli_args.no_default_ref,
         "ref":                cli_args.ref,
@@ -435,9 +448,19 @@ def validate_config(cfg: Dict[str, Any]) -> None:
 #                       OUTPUT DIRECTORY
 # ============================================================================
 
-def create_output_directory(output_dir: Optional[str], pdb_file: str):
+def create_output_directory(output_dir: Optional[str], pdb_input: str):
+    """Create the output directory and its ref/ subfolder.
+
+    When *pdb_input* is a directory (ensemble mode), the default name is
+    derived from the directory NAME (not its stem, which breaks on names
+    containing a dot): ``<dirname>_deuterated_pdbs``.  The downstream
+    prefix logic (``_primus_out`` / ``_final_results``) strips
+    ``_deuterated_pdbs`` and works unchanged.
+    """
+    input_path = Path(pdb_input)
     if output_dir is None:
-        output_path = Path(Path(pdb_file).stem + "_deuterated_pdbs")
+        base = input_path.name if input_path.is_dir() else input_path.stem
+        output_path = Path(base + "_deuterated_pdbs")
     else:
         output_path = Path(output_dir)
 
@@ -708,42 +731,61 @@ def evaluate_fitness(primus_dir: str,
                      ratio_threshold: float,
                      deut_ref: Optional[str] = None,
                      prot_ref: Optional[str] = None,
-                     gamma: float = 2) -> None:
-    """Evaluate fitness for all chromosomes by matching .dat filenames."""
+                     gamma: float = 2,
+                     multi: bool = False) -> None:
+    """Evaluate fitness for all chromosomes by matching .dat filenames.
+
+    Single-PDB mode (``multi=False``): each chromosome matches its own .dat
+    file by stem.  Ensemble mode (``multi=True``): .dat files are grouped by
+    chromosome-level key (``_confNNNN`` suffix stripped), the mean curve of
+    each group is computed, and the fitness is evaluated on that mean curve.
+    """
     logger.info("=" * 70)
     logger.info(">>> Evaluating fitness from SANS data…")
     logger.info("=" * 70)
 
-    chrom_by_stem: Dict[str, Chromosome] = {
-        Path(get_pdb_filename(c)).stem: c for c in population
+    chrom_by_key: Dict[str, Chromosome] = {
+        chrom_key_from_filename(get_pdb_filename(c)): c for c in population
     }
 
     try:
-        fitness_scores, dat_files, ratios = evaluate_population_fitness(
-            directory=primus_dir,
-            q_max=q_max,
-            ratio_threshold=ratio_threshold,
-            gamma=gamma,
-        )
+        if multi:
+            fitness_scores, keys, ratios, _groups = evaluate_population_fitness_mean(
+                directory=primus_dir,
+                q_max=q_max,
+                ratio_threshold=ratio_threshold,
+                gamma=gamma,
+            )
+            pairs = zip(fitness_scores, keys, ratios)
+        else:
+            fitness_scores, dat_files, ratios = evaluate_population_fitness(
+                directory=primus_dir,
+                q_max=q_max,
+                ratio_threshold=ratio_threshold,
+                gamma=gamma,
+            )
+            # In single mode the .dat stem IS the chromosome key.
+            pairs = zip(fitness_scores,
+                        (Path(f).stem for f in dat_files),
+                        ratios)
     except Exception as exc:
         logger.error(f"Fitness evaluation failed: {exc}")
         raise RuntimeError(f"Fitness evaluation error: {exc}") from exc
 
-    matched, unmatched_files = 0, []
-    for score, file_path, ratio in zip(fitness_scores, dat_files, ratios):
-        stem = Path(file_path).stem
-        if stem in chrom_by_stem:
-            chrom_by_stem[stem].fitness = float(score)
-            chrom_by_stem[stem].ratio   = float(ratio)
+    matched, unmatched_keys = 0, []
+    for score, key, ratio in pairs:
+        if key in chrom_by_key:
+            chrom_by_key[key].fitness = float(score)
+            chrom_by_key[key].ratio = float(ratio)
             matched += 1
         else:
-            unmatched_files.append(Path(file_path).name)
+            unmatched_keys.append(key)
 
-    if unmatched_files:
+    if unmatched_keys:
         logger.warning(
-            f"  {len(unmatched_files)} .dat file(s) had no matching chromosome: "
-            + ", ".join(unmatched_files[:5])
-            + (" …" if len(unmatched_files) > 5 else "")
+            f"  {len(unmatched_keys)} curve group(s) had no matching chromosome: "
+            + ", ".join(unmatched_keys[:5])
+            + (" …" if len(unmatched_keys) > 5 else "")
         )
 
     passed = int(np.sum(fitness_scores > 0))
@@ -761,14 +803,18 @@ def cleanup_non_tier1_files(output_dir: Path,
     Remove all PDB and SANS output files that do NOT belong to tier-1 chromosomes.
 
     Tier-1 chromosomes retain their original creation filenames so their files
-    are easily identified by stem.  The ref/ subfolder is never touched.
+    are easily identified by stem.  In ensemble mode the ``_confNNNN`` suffix
+    is stripped before the comparison (the file globs are unchanged and still
+    match conf-suffixed names).  The ref/ subfolder is never touched.
     """
-    tier1_stems: Set[str] = {Path(get_pdb_filename(c)).stem for c in tier1_population}
+    tier1_keys: Set[str] = {
+        chrom_key_from_filename(get_pdb_filename(c)) for c in tier1_population
+    }
 
     # PDB files
     removed_pdb = 0
     for pdb in list(output_dir.glob("gen*_Chr*.pdb")):
-        if pdb.stem not in tier1_stems:
+        if chrom_key_from_filename(pdb.name) not in tier1_keys:
             try:
                 pdb.unlink()
                 removed_pdb += 1
@@ -782,7 +828,7 @@ def cleanup_non_tier1_files(output_dir: Path,
         primus_path = Path(primus_dir)
         for ext in ('.dat', '.out', '.log'):
             for f in list(primus_path.glob(f"gen*_Chr*{ext}")):
-                if f.stem not in tier1_stems:
+                if chrom_key_from_filename(f.name) not in tier1_keys:
                     try:
                         f.unlink()
                         removed_sans += 1
@@ -792,7 +838,7 @@ def cleanup_non_tier1_files(output_dir: Path,
 
     logger.info(
         f"  Cleanup: removed {removed_pdb} PDB, {removed_sans} SANS file(s). "
-        f"Kept {len(tier1_stems)} tier-1 file(s)."
+        f"Kept {len(tier1_keys)} tier-1 file(s)."
     )
 
 
@@ -1052,6 +1098,15 @@ def write_effective_config(
     L.append("# Values below are the effective ones: CLI > --config > ./config.ini > defaults.")
     L.append("")
 
+    # Ensemble mode: resolved input list and conformation count, so the run is replayable
+    pdb_inputs = cfg.get("pdb_inputs")
+    if pdb_inputs:
+        L.append("[INPUT]")
+        if cfg.get("n_conformations") is not None:
+            L.append(f"n_conformations = {_fmt(cfg['n_conformations'])}")
+        L.append(f"pdb_inputs = {' '.join(str(p) for p in pdb_inputs)}")
+        L.append("")
+
     L.append("[POPULATION]")
     L.append(f"population_size = {_fmt(cfg['population_size'])}")
     L.append(f"elitism = {_fmt(cfg['elitism'])}")
@@ -1161,7 +1216,8 @@ def write_effective_config(
 
 
 def create_final_result_folder(best_chrom, pdb_stem, output_dir,
-                                primus_dir, best_summary_path):
+                                primus_dir, best_summary_path,
+                                multi: bool = False, n_conf: int = 0):
     folder_name  = output_dir.name
     prefix       = folder_name.replace("_deuterated_pdbs", "")
     final_dir    = output_dir.parent / f"{prefix}_final_results"
@@ -1189,25 +1245,56 @@ def create_final_result_folder(best_chrom, pdb_stem, output_dir,
         dst_fh.write(lines[-1])
     logger.info(f"  CSV written             : {csv_dest.name}")
 
-    # Best PDB
-    best_pdb_src = output_dir / get_pdb_filename(best_chrom)
-    if best_pdb_src.exists():
-        shutil.copy2(best_pdb_src, pdb_dir / f"{base_name}.pdb")
-        logger.info("  Best PDB copied")
+    # Best PDB: one per conformation in ensemble mode (legacy single name otherwise)
+    if multi:
+        copied = 0
+        for conf_idx in range(n_conf):
+            src = output_dir / get_pdb_filename(best_chrom, conf_idx=conf_idx)
+            if src.exists():
+                shutil.copy2(src, pdb_dir / f"{base_name}_conf{conf_idx:04d}.pdb")
+                copied += 1
+            else:
+                logger.warning(f"  Best PDB NOT found: {src.name}")
+        logger.info(f"  Best PDBs copied        : {copied}/{n_conf} conformation(s)")
     else:
-        logger.warning(f"  Best PDB NOT found: {best_pdb_src.name}")
+        best_pdb_src = output_dir / get_pdb_filename(best_chrom)
+        if best_pdb_src.exists():
+            shutil.copy2(best_pdb_src, pdb_dir / f"{base_name}.pdb")
+            logger.info("  Best PDB copied")
+        else:
+            logger.warning(f"  Best PDB NOT found: {best_pdb_src.name}")
 
     # Reference PDBs
     for src in sorted((output_dir / "ref").glob("*.pdb")):
         shutil.copy2(src, pdb_ref_dir / src.name)
         logger.info(f"  Ref PDB copied: {src.name}")
 
-    # Best SANS outputs
-    best_dat_stem = Path(get_pdb_filename(best_chrom)).stem
-    for ext in (".dat", ".log", ".out"):
-        src = primus_path / f"{best_dat_stem}{ext}"
-        if src.exists():
-            shutil.copy2(src, sans_dir / f"{base_name}{ext}")
+    # Best SANS outputs: per-conformation files plus the mean curve in ensemble mode
+    best_key = chrom_key_from_filename(get_pdb_filename(best_chrom))
+    if multi:
+        groups = group_dat_files_by_chromosome(str(primus_path))
+        conf_files = groups.get(best_key, [])
+        for src in sorted(conf_files):
+            shutil.copy2(src, sans_dir / Path(src).name)
+        if conf_files:
+            q_mean, I_mean, I_std = mean_curve(conf_files)
+            mean_path = sans_dir / f"{base_name}.dat"
+            with open(mean_path, "w", encoding="utf-8") as fh:
+                fh.write(f"# mean SANS curve of the best chromosome over "
+                         f"{len(conf_files)} conformation(s)\n")
+                fh.write("# q  I_mean  I_std\n")
+                for qi, mi, si in zip(q_mean, I_mean, I_std):
+                    fh.write(f"{qi:.6f}\t{mi:.6e}\t{si:.6e}\n")
+            logger.info(f"  Mean best SANS curve    : {mean_path.name} "
+                        f"({len(conf_files)} curve(s) averaged)")
+        else:
+            logger.warning(f"  No SANS curves found for best chromosome key {best_key}")
+    else:
+        best_dat_stem = Path(get_pdb_filename(best_chrom)).stem
+        for ext in (".dat", ".log", ".out"):
+            src = primus_path / f"{best_dat_stem}{ext}"
+            if src.exists():
+                shutil.copy2(src, sans_dir / f"{base_name}{ext}")
 
     # Reference SANS files
     ref_sans_dir = primus_path / "ref"
@@ -1257,11 +1344,30 @@ def main():
     # ---------- Validate input files ----------
     pdb_path = Path(cfg['pdb_file'])
     if not pdb_path.exists():
-        logger.error(f"PDB file not found: {pdb_path}")
+        logger.error(f"PDB input not found: {pdb_path}")
         sys.exit(1)
     if not Path(cfg['batch_script']).exists():
         logger.error(f"Batch script not found: {cfg['batch_script']}")
         sys.exit(1)
+
+    # ---------- Resolve ensemble inputs (file or directory + --conf N) ----------
+    try:
+        pdb_inputs = resolve_pdb_inputs(cfg['pdb_file'], cfg.get("n_conformations"),
+                                        cfg.get("seed"))
+    except ValueError as exc:
+        logger.error(f"Input resolution failed: {exc}")
+        sys.exit(1)
+    cfg["pdb_inputs"] = pdb_inputs
+    multi = len(pdb_inputs) > 1
+    n_conf = len(pdb_inputs)
+    if multi:
+        logger.info(
+            f"Ensemble mode: {n_conf} conformation(s) from {pdb_path} "
+            f"-> {cfg['population_size']} x {n_conf} = "
+            f"{cfg['population_size'] * n_conf} Pepsi-SANS jobs per generation"
+        )
+    else:
+        logger.info(f"Single-PDB mode: {pdb_inputs[0]}")
 
     # ---------- Analyse PDB composition ----------
     logger.info("=" * 70)
@@ -1289,14 +1395,15 @@ def main():
     )
 
     try:
-        template = build_template(str(pdb_path), policy)
+        templates = build_templates(pdb_inputs, policy)
     except Exception as exc:
         logger.error(f"DeuterPDB template error: {exc}")
         sys.exit(1)
 
-    composition = composition_stats(template)
+    composition = aggregate_composition(templates)
     total_residues = composition["n_residues"]
     total_h        = sum(composition["aa_hydrogen_count"].values())
+    logger.info(f"  Conformations   : {len(templates)}")
     logger.info(f"  Total residues  : {total_residues}")
     logger.info(f"  Total H atoms   : {total_h}")
 
@@ -1322,6 +1429,9 @@ def main():
     logger.info("                SANS DEUTERATION OPTIMISATION")
     logger.info("=" * 70)
     logger.info(f"Source PDB           : {cfg['pdb_file']}")
+    if multi:
+        logger.info(f"Ensemble mode        : {n_conf} conformation(s) "
+                    f"({cfg['population_size'] * n_conf} Pepsi-SANS jobs/gen)")
     logger.info(f"Population size      : {cfg['population_size']}")
     logger.info(f"Elitism              : {cfg['elitism']}")
     if cfg.get('d2o') is None:
@@ -1350,9 +1460,14 @@ def main():
     logger.info(">>> Generating protein composition plots")
     generate_protein_plots(composition, plot_dir)
 
-    # Create default references unless --no_default_ref
+    # Create default references unless --no_default_ref: one pair per
+    # conformation in ensemble mode ({stem}_conf{c:04d}_total_*.pdb, so the
+    # ref/ names stay unique); their .dat curves are averaged once, after the
+    # generation-0 full-mode batch run (average_ref_curves).
     if not cfg.get("no_default_ref"):
-        create_protonated_reference_pdbs(template, pdb_path.stem, ref_dir, run_seed)
+        for conf_idx, (template, pdb_in) in enumerate(zip(templates, pdb_inputs)):
+            ref_stem = pdb_in.stem if not multi else f"{pdb_in.stem}_conf{conf_idx:04d}"
+            create_protonated_reference_pdbs(template, ref_stem, ref_dir, run_seed)
 
     # Copy user-provided reference PDBs
     if cfg.get("ref"):
@@ -1378,9 +1493,15 @@ def main():
     logger.info("=" * 70)
 
     population = generator.generate_initial_population(generation=0)
-    generate_pdbs_for_chromosomes(template, population, output_dir, run_seed)
+    generate_pdbs_for_chromosomes_multi(templates, population, output_dir, run_seed)
     primus_dir = run_batch_processing(output_dir, cfg['batch_script'], conc=cfg['conc'])
-    evaluate_fitness(primus_dir, population, cfg['q_max'], cfg['ratio_threshold'], gamma=cfg['gamma'])
+    # Ensemble mode: average the per-conformation reference curves once, so
+    # primus_out/ref/ holds exactly one mean curve per reference kind before
+    # the first fitness evaluation.
+    if multi:
+        average_ref_curves(primus_dir)
+    evaluate_fitness(primus_dir, population, cfg['q_max'], cfg['ratio_threshold'],
+                     gamma=cfg['gamma'], multi=multi)
 
     sorted_indices = get_sorted_indices(population)
     previous_best_fitness = check_fitness_non_decreasing(population, sorted_indices, None, 0)
@@ -1411,11 +1532,12 @@ def main():
 
         cleanup_non_tier1_files(output_dir, primus_dir, tier1)
 
-        new_pdb_files = generate_pdbs_for_chromosomes(template, tier2_and_3, output_dir, run_seed)
+        new_pdb_files = generate_pdbs_for_chromosomes_multi(templates, tier2_and_3, output_dir, run_seed)
         primus_dir    = run_batch_processing(output_dir, cfg['batch_script'],
                                              new_pdb_files=new_pdb_files, conc=cfg['conc'])
 
-        evaluate_fitness(primus_dir, new_population, cfg['q_max'], cfg['ratio_threshold'], gamma=cfg['gamma'])
+        evaluate_fitness(primus_dir, new_population, cfg['q_max'], cfg['ratio_threshold'],
+                         gamma=cfg['gamma'], multi=multi)
 
         sorted_indices        = get_sorted_indices(new_population)
         previous_best_fitness = check_fitness_non_decreasing(
@@ -1468,10 +1590,12 @@ def main():
 
     final_dir = create_final_result_folder(
         best_chrom=best,
-        pdb_stem=pdb_path.stem,
+        pdb_stem=pdb_path.name if pdb_path.is_dir() else pdb_path.stem,
         output_dir=output_dir,
         primus_dir=primus_dir,
         best_summary_path=best_summary_path,
+        multi=multi,
+        n_conf=n_conf,
     )
 
     # Archive the effective configuration (config.ini + CLI overrides) next to
