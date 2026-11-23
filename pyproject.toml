@@ -30,6 +30,8 @@ platforms = ["linux-64"]
 optisans = "optisans"
 test-deuterpdb = "pytest -q tests/deuterpdb"
 test-deuterpdb-slow = "pytest -q -m slow tests/deuterpdb"
+test-ensemble = "pytest -q tests/test_ensemble.py"
+test-ensemble-slow = "pytest -q -m slow tests/test_ensemble.py"
 
 [tool.pixi.pypi-dependencies]
 python_project = { path = ".", editable = true }

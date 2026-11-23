@@ -32,6 +32,7 @@ that wraps all functionality behind clear subcommands:
 ```bash
 optisans run protein.pdb                              # full GA, default params
 optisans run protein.pdb -p 60 -g 50 --seed 42       # custom params
+optisans run ./conformations/ --conf 10               # ensemble mode: 10 PDBs of the folder
 optisans run protein.pdb --config config.ini          # via config file
 optisans run protein.pdb --ref extra_ref.pdb          # additional reference PDB
 optisans deuterate protein.pdb -o out.pdb --d2o 50 --aa "ALA GLY"
@@ -241,6 +242,7 @@ Options:
 
 Used by `generate_deuterated_pdbs.py`:
 
+- `[INPUT]`: optional `n_conformations` (same as `--conf`)
 - `[POPULATION]`: `population_size`, `elitism`, `d2o_variation_rate`
 - `[GENETIC]`: `mutation_rate`, `crossover_rate`
 - `[EXECUTION]`: `generations`, `seed`
@@ -249,6 +251,34 @@ Used by `generate_deuterated_pdbs.py`:
 - `[D2O]`: optional fixed D2O list (space-separated integers, e.g. `d2o = 0 42 100`); set to `None` to use free variation
 
 Command-line arguments always override values in the config file.
+
+### Ensemble mode (directory of PDBs + `--conf N`)
+
+When the positional argument of `optisans run` is a **directory**, the run uses
+several PDB conformations of the same protein instead of one:
+
+```bash
+optisans run ./GFP_conformations/ --conf 10 -p 60 -g 50 --seed 42
+```
+
+- `--conf N` uses the first N PDB files of the folder (sorted, or seeded-shuffled
+  when `--seed` is set); `1 <= N <= number of .pdb files`. Without `--conf`, all
+  PDBs of the folder are used. On a single-file input, `--conf` is ignored.
+- Each chromosome is deuterated once per conformation: the generated PDBs get a
+  `_confNNNN` suffix (`gen00_Chr000_d2o042_deut05_conf0003.pdb`).
+- Pepsi-SANS simulates every PDB, then the curves of each chromosome are averaged
+  (regridded on the first curve's q-grid) and the fitness is computed **on the mean
+  curve**. The default references are generated per conformation and averaged once
+  into `mean_total_deuteration.dat` / `mean_total_protonation.dat` in
+  `<prefix>_primus_out/ref/`.
+- Default output folders are named after the input directory
+  (`<dirname>_deuterated_pdbs/`, `<dirname>_primus_out/`, `<dirname>_final_results/`).
+  The final results folder contains the best chromosome's PDB **for every
+  conformation** plus its mean SANS curve.
+- Cost: `population_size x N` Pepsi-SANS jobs per generation (e.g. `-p 60 --conf 10`
+  = 600 simulations per generation), logged at startup.
+- `parallel_process_pdb.sh` needs no change: its `_d2o(\d+)` regex still matches
+  conf-suffixed filenames.
 
 ### `pdb_config.ini`: standalone PDB deuteration
 
